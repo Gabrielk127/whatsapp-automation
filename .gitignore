@@ -1,0 +1,23 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Outros arquivos temporários
+*.log
+*.tmp
+/logs/
+
+# Environment variables
+.env
+
+# Download files
+*.zip

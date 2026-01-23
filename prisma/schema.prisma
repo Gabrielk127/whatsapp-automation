@@ -1,0 +1,17 @@
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider             = "prisma-client-py"
+  recursive_type_depth = 5
+}
+
+model Log {
+  id      String   @id @default(auto()) @map("_id") @db.ObjectId
+  level   String
+  message String
+  time    DateTime @default(now())
+  context Json?
+}
