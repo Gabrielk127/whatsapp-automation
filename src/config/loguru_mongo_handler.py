@@ -3,7 +3,7 @@
 import atexit
 import json
 import multiprocessing
-from datetime import datetime
+import sys
 
 from loguru import logger
 
@@ -54,7 +54,29 @@ class MongoDBLoguruHandler:
         self.queue.put(log_data)
 
 
-def setup_loguru(log_repository: LogRepository):
-    """Setup Loguru logger with MongoDB handler using multiprocessing."""
-    handler = MongoDBLoguruHandler(log_repository)
-    logger.add(handler.write, level="DEBUG")
+def setup_loguru(include_mongodb: bool = False, log_repository: LogRepository | None = None):
+    """
+    Setup Loguru logger.
+    
+    Args:
+        include_mongodb: If True, adds MongoDB handler
+        log_repository: LogRepository instance for MongoDB
+    """
+    logger.remove()
+    
+    # Console Handler only
+    console_format = (
+        "<level>{level: <8}</level> | "
+        "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
+        "<level>{message}</level>"
+    )
+    
+    logger.add(sys.stdout, format=console_format, level="DEBUG", colorize=True)
+    
+    # MongoDB Handler (optional)
+    if include_mongodb and log_repository:
+        try:
+            handler = MongoDBLoguruHandler(log_repository)
+            logger.add(handler.write, level="INFO")
+        except Exception as e:
+            logger.warning(f"Failed to configure MongoDB logging: {e}")
