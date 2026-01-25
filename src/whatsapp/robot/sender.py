@@ -157,6 +157,7 @@ def enviar_mensagens():
                 
                 if not telefone: 
                     logger.warning(f"⚠️ Telefone inválido para {nome}: {telefone_bruto}")
+                    logger.info(f"   (Número muito curto ou sem dígitos - pode ser telefone fixo ou formato incorreto)")
                     continue
 
                 logger.success(f"✅ Telefone válido: {telefone}")
@@ -187,7 +188,32 @@ def enviar_mensagens():
                         # Aguarda a página carregar o chat ou o erro
                         page.wait_for_load_state("networkidle")
                         
-                        # Tenta encontrar o campo de mensagem com seletores cada vez menos específicos
+                        # VALIDAÇÃO 1: Detecta mensagem de erro "O número de telefone compartilhado por url é inválido"
+                        try:
+                            # Procura pela mensagem de erro exata do WhatsApp
+                            error_msg = page.query_selector('text=O número de telefone compartilhado por url é inválido')
+                            if error_msg:
+                                logger.warning(f"   ⚠️ WhatsApp rejeitou o número {telefone}")
+                                logger.info(f"      Mensagem: 'O número de telefone compartilhado por url é inválido'")
+                                logger.info(f"      Possível causa: Número não tem WhatsApp ou é inválido")
+                                break  # Sai do loop de mensagens (pula para próximo telefone)
+                        except:
+                            pass  # Se não encontrar, continua
+                        
+                        # VALIDAÇÃO 2: Verifica se há alguma mensagem de erro na página
+                        try:
+                            # Procura por elementos de erro comuns do WhatsApp
+                            error_elements = page.query_selector_all('[role="alert"]')
+                            if error_elements:
+                                for elem in error_elements:
+                                    error_text = elem.text_content()
+                                    if error_text and ("inválido" in error_text.lower() or "error" in error_text.lower()):
+                                        logger.warning(f"   ⚠️ Erro detectado na página: {error_text}")
+                                        break  # Sai do loop de mensagens
+                        except:
+                            pass  # Se não encontrar, continua
+                        
+                        # VALIDAÇÃO 3: Tenta encontrar o campo de mensagem
                         input_box = None
                         
                         try:
@@ -206,6 +232,18 @@ def enviar_mensagens():
                                 input_box = page.wait_for_selector(seletor_input_fallback, timeout=25000)
                             except:
                                 pass
+                        
+                        # Se não encontrou campo de mensagem, pode ser que:
+                        # 1. O número não tem WhatsApp
+                        # 2. O número está bloqueado
+                        # 3. Houve timeout na página
+                        if not input_box:
+                            logger.warning(f"   ⚠️ Não foi possível enviar para {telefone}")
+                            logger.info(f"      Possível causa:")
+                            logger.info(f"      • Este número não tem WhatsApp ativo")
+                            logger.info(f"      • Ou o número está bloqueado")
+                            logger.info(f"      • Ou houve timeout na página")
+                            continue  # Pula para o próximo telefone
                         
                         if input_box:
                             # Verifica se encontrou o elemento certo (da conversa, não da pesquisa)

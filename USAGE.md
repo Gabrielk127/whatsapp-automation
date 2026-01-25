@@ -124,7 +124,7 @@ grep "❌" src/whatsapp/logs/whatsapp.log
 4. `state.json` é criado automaticamente
 5. Na próxima execução, usa a sessão salva
 
-## 📱 Formato do Excel (contatos.xlsx)
+## � Formato do Excel (contatos.xlsx)
 
 | Nome    | Tel1        | Tel2       | Tel3 |
 | ------- | ----------- | ---------- | ---- |
@@ -136,6 +136,63 @@ grep "❌" src/whatsapp/logs/whatsapp.log
 
 - `Nome`: Será formatado para Title Case com primeiro nome
 - `Tel1-Tel5`: Números sem formatação, será adicionado DDI 55
+
+## 📞 Validação de Telefones
+
+### Números em Formato Incorreto
+
+Se um número está em formato inválido (muito curto, sem dígitos suficientes):
+
+```
+⚠️ Telefone inválido para João: 123
+   (Número muito curto ou sem dígitos - pode ser telefone fixo ou formato incorreto)
+```
+
+**O que é considerado inválido:**
+
+- ❌ Menos de 10 dígitos (ex: 123, 98765432)
+- ❌ Números vazios ou nulos
+- ❌ Apenas caracteres especiais (ex: ----, ( ))
+
+**O que é considerado válido:**
+
+- ✅ 10 dígitos (ex: 4333333333 → 554333333333)
+- ✅ 11 dígitos (ex: 43998377239 → 5543998377239)
+- ✅ Com formatação (ex: (43) 99837-7239 → 5543998377239)
+
+### Números Sem WhatsApp
+
+Se o número é válido **mas não tem WhatsApp ativo**:
+
+```
+📱 Processando João - 5543998377239... (Mensagem 1/2)
+⚠️ WhatsApp rejeitou o número 5543998377239
+   Mensagem: 'O número de telefone compartilhado por url é inválido'
+   Possível causa: Número não tem WhatsApp ou é inválido
+```
+
+Ou quando não encontra o campo de mensagem:
+
+```
+⚠️ Não foi possível enviar para 5543998377239
+   Possível causa:
+   • Este número não tem WhatsApp ativo
+   • Ou o número está bloqueado
+   • Ou houve timeout na página
+```
+
+**Por que isso acontece:**
+
+- Telefones fixos (TIM, Claro, Vivo fixo) geralmente **não têm WhatsApp**
+- Números antigos ou desativados não têm WhatsApp
+- Números bloqueados pelo WhatsApp
+- Números que o remetente está bloqueado
+
+**Solução:**
+
+- ✅ Remova esses números da planilha
+- ✅ Ou deixe as colunas vazias se não tiver móvel
+- ✅ O script pulará automaticamente com uma mensagem clara no log
 
 ## ⚙️ Modo de Operação
 

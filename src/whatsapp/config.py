@@ -15,8 +15,8 @@ MENSAGEM_BASE_2 = "Você tem interesse em saber mais? Posso enviar detalhes!"
 COLUNAS_TELEFONE = ['Telefone 1', 'Telefone 2', 'Telefone 3', 'Telefone 4', 'Telefone 5']
 
 # Delays (segundos) - AUMENTADOS PARA MELHOR INTERAÇÃO
-DELAY_MIN = 45
-DELAY_MAX = 75
+DELAY_MIN = 60
+DELAY_MAX = 180
 DELAY_ENTRE_MENSAGENS = 10
 
 # User Agent
