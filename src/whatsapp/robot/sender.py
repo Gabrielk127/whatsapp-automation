@@ -21,21 +21,31 @@ _browser = None
 
 
 def _salvar_sessao_e_limpar():
-    """Salva a sessão e fecha o navegador."""
+    """
+    Fecha o contexto persistente (com launch_persistent_context, a sessão é salva automaticamente).
+    
+    O contexto persistente do Playwright salva automaticamente:
+    - Cookies
+    - LocalStorage
+    - SessionStorage
+    - IndexedDB
+    - Service Workers
+    
+    Tudo é persistido no diretório .whatsapp_profile
+    """
     global _context, _browser
     
     if _context:
         try:
-            logger.info("💾 Salvando sessão antes de encerrar...")
-            os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-            _context.storage_state(path=STATE_FILE)
-            logger.success("✅ Sessão salva!")
+            _context.close()
+            logger.debug("✅ Contexto persistente fechado (sessão salva automaticamente)")
         except Exception as e:
-            logger.warning(f"⚠️ Erro ao salvar sessão: {e}")
+            logger.debug(f"Erro ao fechar contexto: {e}")
     
     if _browser:
         try:
             _browser.close()
+            logger.debug("Navegador fechado")
         except Exception as e:
             logger.debug(f"Erro ao fechar navegador: {e}")
 
@@ -57,7 +67,7 @@ def enviar_mensagens():
     Envia mensagens em massa via WhatsApp Web.
     
     Lê contatos do arquivo Excel (contatos.xlsx) e envia 2 mensagens para cada um.
-    Usa a sessão salva (state.json) para manter a autenticação.
+    Usa launch_persistent_context para manter a autenticação entre execuções de forma mais confiável.
     
     Estrutura esperada do Excel:
         - Coluna 'Nome': Nome do contato (será formatado)
@@ -72,37 +82,28 @@ def enviar_mensagens():
         return
 
     with sync_playwright() as p:
-        global _context, _browser
+        global _browser, _context
         
-        _browser = p.chromium.launch(headless=False)
+        # Garante que o diretório de dados existe
+        user_data_dir = os.path.join(os.path.dirname(STATE_FILE), '.whatsapp_profile')
+        os.makedirs(user_data_dir, exist_ok=True)
         
-        # Tenta carregar a sessão existente
-        context = None
-        if os.path.exists(STATE_FILE):
-            logger.info(f"✅ Arquivo state.json encontrado: {STATE_FILE}")
-            file_size = os.path.getsize(STATE_FILE)
-            logger.debug(f"   Tamanho: {file_size} bytes")
-            
-            try:
-                logger.debug("   Tentando carregar sessão...")
-                context = _browser.new_context(storage_state=STATE_FILE)
-                logger.success("   ✅ Sessão carregada!")
-            except Exception as e:
-                logger.error(f"   ❌ Erro ao carregar sessão: {e}")
-                logger.warning("   Criando nova sessão...")
-                context = None
+        # Usa launch_persistent_context para sessão mais confiável
+        # Isso cria um perfil de usuário completo similar ao Chrome
+        logger.info("🔄 Iniciando navegador com contexto persistente...")
+        _context = p.chromium.launch_persistent_context(
+            user_data_dir=user_data_dir,
+            headless=False,
+            locale="pt-BR",
+            timezone_id="America/Sao_Paulo"
+        )
         
-        # Se não conseguiu carregar, cria uma nova
-        if context is None:
-            logger.info("🔄 Criando nova sessão...")
-            context = _browser.new_context()
+        _browser = None  # launch_persistent_context retorna o contexto, não o browser
         
-        # Armazena na variável global para cleanup
-        _context = context
+        logger.success("✅ Contexto persistente criado!")
+        page = _context.new_page()
         
-        page = context.new_page()
-        
-        # User Agent para evitar detecção simples
+        # User Agent
         page.set_extra_http_headers({"User-Agent": USER_AGENT})
 
         logger.info("🌐 Acessando WhatsApp Web...")
@@ -115,27 +116,8 @@ def enviar_mensagens():
             logger.success("✅ WhatsApp carregado e autenticado!")
             time.sleep(5)  # Aguarda um pouco para garantir que tudo foi carregado
             
-            # Salva a sessão com debug detalhado
-            logger.info("📝 Salvando sessão...")
-            try:
-                # Garante que o diretório existe
-                os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-                
-                # Salva o estado do contexto
-                context.storage_state(path=STATE_FILE)
-                
-                # Verifica se o arquivo foi criado
-                time.sleep(1)  # Aguarda um pouco para garantir que foi escrito em disco
-                if os.path.exists(STATE_FILE):
-                    file_size = os.path.getsize(STATE_FILE)
-                    logger.success(f"✅ Sessão salva com sucesso! ({file_size} bytes)")
-                    logger.debug(f"   Arquivo: {STATE_FILE}")
-                else:
-                    logger.error(f"❌ Erro: Arquivo não foi criado em {STATE_FILE}")
-                    
-            except Exception as e:
-                logger.error(f"❌ Erro ao salvar sessão: {e}")
-                logger.debug(f"   Tipo de erro: {type(e).__name__}")
+            # ✅ Com launch_persistent_context, a sessão é salva automaticamente!
+            logger.success("✅ Sessão será persistida automaticamente pelo navegador.")
                 
         except Exception as e:
             logger.error(f"❌ Erro ao conectar ao WhatsApp: {e}")
@@ -315,15 +297,21 @@ def enviar_mensagens():
 
         logger.success(f"🎉 Fim do processamento. Total enviados: {total_enviados}")
         
-        # Salva a sessão para próximas execuções
+        # Salva a sessão ANTES de fechar
+        logger.info("💾 Salvando sessão...")
         try:
-            logger.info("💾 Salvando sessão para próximas execuções...")
-            os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-            context.storage_state(path=STATE_FILE)
-            logger.success(f"✅ Sessão salva com sucesso!")
+            _context.storage_state(path=STATE_FILE)
+            time.sleep(1)  # Aguarda a escrita em disco
+            
+            # Verifica se foi salvo
+            if os.path.exists(STATE_FILE) and os.path.getsize(STATE_FILE) > 100:
+                logger.success(f"✅ Sessão salva com sucesso!")
+            else:
+                logger.warning("⚠️ Arquivo pode não ter sido salvo corretamente")
         except Exception as e:
-            logger.warning(f"⚠️ Não foi possível salvar sessão: {e}")
+            logger.error(f"❌ Erro ao salvar sessão: {e}")
         
+        # Fecha o contexto e navegador
         _salvar_sessao_e_limpar()
 
 
