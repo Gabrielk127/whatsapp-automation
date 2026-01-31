@@ -2,14 +2,11 @@
 
 from typing import List, Optional
 
-from flask import Flask, jsonify
 from prisma.models import Log
 from prisma.types import LogCreateInput
 
 from src.config.prisma_config import connect_prisma, disconnect_prisma, prisma
 from src.utils.make_sync import make_sync
-
-app = Flask(__name__)
 
 
 class LogRepository:
@@ -78,7 +75,3 @@ class LogRepository:
         """Synchronous wrapper for get_last_logs (for multiprocessing)."""
         logs = await self.get_last_logs(limit)
         return list(logs) if logs else []
-
-
-if __name__ == "__main__":
-    app.run(debug=True)

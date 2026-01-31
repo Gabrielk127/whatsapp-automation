@@ -1,7 +1,6 @@
 loguru
 prisma
 playwright
-openpyxl
 pymongo
 python-dotenv
 

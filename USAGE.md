@@ -34,9 +34,6 @@ python src/main.py auth
 
 # Apenas envio de mensagens
 python src/main.py send
-
-# Com logging em MongoDB
-python src/main.py full --mongodb
 ```
 
 ### **Opção 2: Código Python**
@@ -101,7 +98,7 @@ DELAY_ENTRE_MENSAGENS = 5
 - **Console**: Colorido em tempo real
 - **Arquivo JSON**: `src/whatsapp/logs/whatsapp.json`
 - **Arquivo TXT**: `src/whatsapp/logs/whatsapp.log`
-- **MongoDB**: Se `--mongodb` for usado
+- **MongoDB**: Opcional (veja seção abaixo)
 
 ### Exemplos
 
@@ -115,6 +112,153 @@ grep "✅ Mensagem" src/whatsapp/logs/whatsapp.log | wc -l
 # Ver apenas erros
 grep "❌" src/whatsapp/logs/whatsapp.log
 ```
+
+## 🗄️ Salvando Logs no MongoDB
+
+### Pré-requisitos
+
+1. **MongoDB instalado e rodando:**
+
+   ```bash
+   # Windows (se instalado via Chocolatey)
+   mongod
+
+   # Ou via Docker
+   docker run -d -p 27017:27017 --name mongodb mongo:latest
+   ```
+
+2. **Variável de ambiente configurada:**
+   - Copie `.env.example` para `.env`
+   - Edite com sua URL do MongoDB:
+
+   ```bash
+   # Para MongoDB local:
+   DATABASE_URL=mongodb://localhost:27017/whatsapp_logs
+
+   # Para MongoDB Atlas (cloud):
+   DATABASE_URL=mongodb+srv://username:password@cluster.mongodb.net/database_name?retryWrites=true&w=majority
+   ```
+
+### Como Usar
+
+#### **Opção 1: Código Python**
+
+```python
+from src.services.application_service import ApplicationService, AutomationMode
+from src.repositories.log_repository import LogRepository
+
+# Criar instância do repositório
+log_repo = LogRepository()
+
+# Executar com MongoDB ativado
+app = ApplicationService(
+    mode=AutomationMode.FULL,
+    include_mongodb=True  # ← Ativa MongoDB
+)
+app.run_sync()
+```
+
+#### **Opção 2: Editar `src/main.py`**
+
+```python
+# Antes:
+application = ApplicationService(mode=AutomationMode.FULL, include_mongodb=False)
+
+# Depois:
+application = ApplicationService(mode=AutomationMode.FULL, include_mongodb=True)
+```
+
+### O que é Salvo no MongoDB
+
+Cada log contém:
+
+```json
+{
+  "_id": "ObjectId",
+  "level": "INFO", // Nível do log (INFO, SUCCESS, WARNING, ERROR)
+  "message": "✅ Mensagem enviada",
+  "time": "2026-01-25T14:30:00.000Z",
+  "context": {
+    "location": "sender.py:250",
+    "function": "enviar_mensagens"
+  }
+}
+```
+
+### Consultando Logs no MongoDB
+
+#### **Via MongoDB Compass (GUI):**
+
+1. Abra MongoDB Compass
+2. Conecte em `mongodb://localhost:27017`
+3. Banco: `whatsapp_logs`
+4. Coleção: `log`
+
+#### **Via Terminal (mongosh):**
+
+```bash
+# Conectar ao MongoDB
+mongosh
+
+# Listar logs
+use whatsapp_logs
+db.log.find()
+
+# Contar mensagens enviadas
+db.log.countDocuments({ message: /Mensagem.*enviada/ })
+
+# Ver apenas erros
+db.log.find({ level: "ERROR" })
+
+# Últimos 10 logs
+db.log.find().sort({ time: -1 }).limit(10)
+
+# Logs de um intervalo de tempo
+db.log.find({
+  time: {
+    $gte: ISODate("2026-01-25T00:00:00Z"),
+    $lte: ISODate("2026-01-25T23:59:59Z")
+  }
+})
+```
+
+#### **Via Python:**
+
+```python
+from src.repositories.log_repository import LogRepository
+import asyncio
+
+async def listar_logs():
+    repo = LogRepository()
+
+    # Todos os logs
+    logs = await repo.get_all_logs()
+    print(f"Total de logs: {len(logs)}")
+
+    # Últimos 10 logs
+    for log in logs[-10:]:
+        print(f"{log.level} | {log.message} | {log.time}")
+
+# Executar
+asyncio.run(listar_logs())
+```
+
+### Solução de Problemas
+
+**Erro: "Failed to connect to MongoDB"**
+
+- Certifique-se que MongoDB está rodando: `mongod` ou `docker ps`
+- Verifique a URL em `.env` - padrão é `mongodb://localhost:27017`
+
+**Erro: "DATABASE_URL not set"**
+
+- Crie arquivo `.env` (copie de `.env.example`)
+- Adicione: `DATABASE_URL=mongodb://localhost:27017/whatsapp_logs`
+
+**Logs não estão sendo salvos**
+
+- Verifique se `include_mongodb=True` está configurado
+- Verifique os logs do console para erros de conexão
 
 ## 🔐 Autenticação
 

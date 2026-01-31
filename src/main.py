@@ -10,7 +10,7 @@ def main() -> None:
     print("="*60 + "\n")
     
     # Executa automação completa
-    application = ApplicationService(mode=AutomationMode.FULL, include_mongodb=False)
+    application = ApplicationService(mode=AutomationMode.FULL, include_mongodb=True)
     application.run_sync()
 
 
