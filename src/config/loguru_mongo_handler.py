@@ -1,12 +1,12 @@
 """Loguru handler for MongoDB logging using multiprocessing."""
 
 import atexit
-import json
 import multiprocessing
 import sys
 
 from loguru import logger
 
+from prisma import Json
 from src.repositories.log_repository import LogRepository
 
 
@@ -34,8 +34,8 @@ class MongoDBLoguruHandler:
                 break
             try:
                 repo.add_log_sync(log_data)  # type: ignore
-            except RuntimeError as e:
-                print(f"Runtime error writing log to MongoDB: {e}")
+            except Exception as e:
+                print(f"Error writing log to MongoDB: {type(e).__name__}: {e}")
 
     def write(self, message):
         """Write a log message to the MongoDB repository."""
@@ -49,7 +49,7 @@ class MongoDBLoguruHandler:
             "level": record["level"].name,
             "message": record["message"],
             "time": record["time"],
-            "context": json.dumps(context_data),
+            "context": Json(context_data),
         }
         self.queue.put(log_data)
 

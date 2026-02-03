@@ -6,6 +6,7 @@ datasource db {
 generator client {
   provider             = "prisma-client-py"
   recursive_type_depth = 5
+  previewFeatures      = []
 }
 
 model Log {
@@ -14,4 +15,12 @@ model Log {
   message String
   time    DateTime @default(now())
   context Json?
+}
+
+model SentMessage {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  name      String
+  phones    String[]
+  status    String
+  createdAt DateTime @default(now())
 }

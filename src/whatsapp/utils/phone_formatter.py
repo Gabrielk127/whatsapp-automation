@@ -1,36 +1,36 @@
-"""Utilitários para processamento de números de telefone."""
+"""Utilities for phone number processing."""
 import re
 import pandas as pd
 
 
-def limpar_numero(num):
+def clean_phone_number(num):
     """
-    Remove caracteres não numéricos e valida formato.
+    Remove non-numeric characters and validate format.
     
-    Garante que o número tem o DDI 55 (Brasil).
+    Ensures the number has the Brazil country code (55).
     
     Args:
-        num: Número de telefone bruto
+        num: Raw phone number
         
     Returns:
-        str: Número limpo com DDI, ou None se inválido
+        str: Cleaned number with country code, or None if invalid
         
-    Exemplo:
-        limpar_numero("(43) 99837-7239") -> "5543998377239"
-        limpar_numero(4398377239) -> "554398377239"
+    Example:
+        clean_phone_number("(43) 99837-7239") -> "5543998377239"
+        clean_phone_number(4398377239) -> "554398377239"
     """
     if pd.isna(num):
         return None
     
     s_num = str(num)
-    # Remove tudo que não é dígito
+    # Remove everything that is not a digit
     clean = re.sub(r'\D', '', s_num)
     
-    # Validação básica: precisa ter pelo menos DDD + numero (10 ou 11 dígitos)
+    # Basic validation: needs at least area code + number (10 or 11 digits)
     if len(clean) < 10:
         return None
     
-    # Adiciona DDI 55 se não tiver
+    # Add country code 55 if not present
     if not clean.startswith('55'):
         clean = '55' + clean
     

@@ -3,6 +3,11 @@
 import asyncio
 from functools import wraps
 
+import nest_asyncio
+
+# Apply nest_asyncio to allow nested event loops
+nest_asyncio.apply()
+
 
 def make_sync(async_func):
     """Decorator that converts an async function to sync."""

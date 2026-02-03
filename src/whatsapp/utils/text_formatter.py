@@ -1,36 +1,36 @@
-"""Utilitários para formatação de texto."""
+"""Utilities for text formatting."""
 import pandas as pd
 
 
-def formatar_nome(nome):
+def format_name(name):
     """
-    Converte nome em maiúsculo para minúsculo com primeira letra maiúscula.
+    Convert uppercase name to lowercase with first letter capitalized.
     
-    Pega só o primeiro nome (primeira palavra).
+    Takes only the first name (first word).
     
     Args:
-        nome: Nome a formatar (pode estar em maiúsculo)
+        name: Name to format (may be uppercase)
         
     Returns:
-        str: Primeiro nome formatado com inicial maiúscula
+        str: First name formatted with initial capital
         
-    Exemplo:
-        formatar_nome("GABRIEL FERNANDES") -> "Gabriel"
-        formatar_nome("ANA SILVA") -> "Ana"
+    Example:
+        format_name("GABRIEL FERNANDES") -> "Gabriel"
+        format_name("ANA SILVA") -> "Ana"
     """
-    if pd.isna(nome) or not nome:
+    if pd.isna(name) or not name:
         return "Cliente"
     
-    # Converte para string e remove espaços extras
-    nome_str = str(nome).strip()
+    # Convert to string and remove extra spaces
+    name_str = str(name).strip()
     
-    # Converte para minúsculo
-    nome_lower = nome_str.lower()
+    # Convert to lowercase
+    name_lower = name_str.lower()
     
-    # Pega só o primeiro nome (primeira palavra)
-    primeiro_nome = nome_lower.split()[0]
+    # Take only the first name (first word)
+    first_name = name_lower.split()[0]
     
-    # Capitaliza a primeira letra
-    nome_formatado = primeiro_nome.capitalize()
+    # Capitalize the first letter
+    formatted_name = first_name.capitalize()
     
-    return nome_formatado
+    return formatted_name

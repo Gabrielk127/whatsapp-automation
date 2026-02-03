@@ -1,4 +1,4 @@
-"""Script de envio de mensagens em massa via WhatsApp."""
+"""Mass message sending script via WhatsApp."""
 import pandas as pd
 from playwright.sync_api import sync_playwright
 import urllib.parse
@@ -7,90 +7,109 @@ import random
 import os
 import atexit
 import signal
+import asyncio
 from loguru import logger
 
 from ..config import (
-    STATE_FILE, ARQUIVO_EXCEL, MENSAGEM_BASE, MENSAGEM_BASE_2,
-    COLUNAS_TELEFONE, DELAY_MIN, DELAY_MAX, DELAY_ENTRE_MENSAGENS, USER_AGENT
+    STATE_FILE, EXCEL_FILE, MESSAGE_TEMPLATE_1, MESSAGE_TEMPLATE_2, MESSAGE_TEMPLATE_3,
+    PHONE_COLUMNS, DELAY_MIN, DELAY_MAX, DELAY_BETWEEN_MESSAGES, USER_AGENT, CONDOMINIO
 )
-from ..utils import limpar_numero, formatar_nome
+from ..utils import clean_phone_number, format_name
+from ...repositories.message_repository import MessageRepository
 
-# Variáveis globais para cleanup
+# Global variables for cleanup
 _context = None
 _browser = None
 
 
-def _salvar_sessao_e_limpar():
+def _save_session_and_cleanup():
     """
-    Fecha o contexto persistente (com launch_persistent_context, a sessão é salva automaticamente).
+    Close the persistent context (with launch_persistent_context, session is saved automatically).
     
-    O contexto persistente do Playwright salva automaticamente:
+    The persistent context saves automatically:
     - Cookies
     - LocalStorage
     - SessionStorage
     - IndexedDB
     - Service Workers
     
-    Tudo é persistido no diretório .whatsapp_profile
+    Everything is persisted in the .whatsapp_profile directory
     """
     global _context, _browser
     
     if _context:
         try:
             _context.close()
-            logger.debug("✅ Contexto persistente fechado (sessão salva automaticamente)")
+            logger.debug("✅ Persistent context closed (session saved automatically)")
         except Exception as e:
-            logger.debug(f"Erro ao fechar contexto: {e}")
+            logger.debug(f"Error closing context: {e}")
     
     if _browser:
         try:
             _browser.close()
-            logger.debug("Navegador fechado")
+            logger.debug("Browser closed")
         except Exception as e:
-            logger.debug(f"Erro ao fechar navegador: {e}")
+            logger.debug(f"Error closing browser: {e}")
 
 
 def _handle_interrupt(signum, frame):
-    """Handler para Ctrl+C."""
-    logger.warning("⏸️  Interrupção detectada. Salvando sessão...")
-    _salvar_sessao_e_limpar()
+    """Handler for Ctrl+C."""
+    logger.warning("⏸️  Interrupt detected. Saving session...")
+    _save_session_and_cleanup()
     exit(0)
 
 
-# Registra o handler para Ctrl+C
+# Register handler for Ctrl+C
 signal.signal(signal.SIGINT, _handle_interrupt)
-atexit.register(_salvar_sessao_e_limpar)
+atexit.register(_save_session_and_cleanup)
 
 
-def enviar_mensagens():
+def send_messages():
     """
-    Envia mensagens em massa via WhatsApp Web.
+    Send mass messages via WhatsApp Web.
     
-    Lê contatos do arquivo Excel (contatos.xlsx) e envia 2 mensagens para cada um.
-    Usa launch_persistent_context para manter a autenticação entre execuções de forma mais confiável.
+    Reads contacts from Excel file (contatos.xlsx) and sends 2 messages to each.
+    Uses launch_persistent_context to maintain authentication between executions.
     
-    Estrutura esperada do Excel:
-        - Coluna 'Nome': Nome do contato (será formatado)
-        - Colunas 'Tel1', 'Tel2', etc: Números de telefone
+    Expected Excel structure:
+        - Column 'Nome': Contact name (will be formatted)
+        - Columns 'Tel1', 'Tel2', etc: Phone numbers
     """
-    # Carregar dados
+    # Load data
     try:
-        df = pd.read_excel(ARQUIVO_EXCEL)
-        logger.info(f"📊 Arquivo '{ARQUIVO_EXCEL}' carregado com sucesso. {len(df)} contatos encontrados.")
+        df = pd.read_excel(EXCEL_FILE)
+        logger.info(f"📊 File '{EXCEL_FILE}' loaded successfully. {len(df)} contacts found.")
     except FileNotFoundError:
-        logger.error(f"Erro: O arquivo '{ARQUIVO_EXCEL}' não foi encontrado.")
+        logger.error(f"Error: File '{EXCEL_FILE}' not found.")
         return
+
+    # Initialize message repository and connect ONCE at the start
+    message_repo = MessageRepository()
+    try:
+        # Connect Prisma synchronously before starting
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                raise RuntimeError("Event loop is closed")
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        loop.run_until_complete(message_repo.ensure_connected())
+        logger.success("✅ Database connection established!")
+    except Exception as db_error:
+        logger.error(f"❌ Failed to connect to database: {db_error}")
+        logger.warning("⚠️ Continuing without database logging...")
 
     with sync_playwright() as p:
         global _browser, _context
         
-        # Garante que o diretório de dados existe
+        # Ensure data directory exists
         user_data_dir = os.path.join(os.path.dirname(STATE_FILE), '.whatsapp_profile')
         os.makedirs(user_data_dir, exist_ok=True)
         
-        # Usa launch_persistent_context para sessão mais confiável
-        # Isso cria um perfil de usuário completo similar ao Chrome
-        logger.info("🔄 Iniciando navegador com contexto persistente...")
+        # Use launch_persistent_context for more reliable session
+        logger.info("🔄 Starting browser with persistent context...")
         _context = p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
             headless=False,
@@ -98,260 +117,336 @@ def enviar_mensagens():
             timezone_id="America/Sao_Paulo"
         )
         
-        _browser = None  # launch_persistent_context retorna o contexto, não o browser
+        _browser = None  # launch_persistent_context returns context, not browser
         
-        logger.success("✅ Contexto persistente criado!")
+        logger.success("✅ Persistent context created!")
         page = _context.new_page()
         
         # User Agent
         page.set_extra_http_headers({"User-Agent": USER_AGENT})
 
-        logger.info("🌐 Acessando WhatsApp Web...")
+        logger.info("🌐 Accessing WhatsApp Web...")
         page.goto("https://web.whatsapp.com/")
         
-        # Aguarda a lista de chats carregar OU espera que o usuário escaneie o QR
+        # Wait for chat list to load OR wait for user to scan QR
         try:
-            logger.info("⏳ Aguardando autenticação (máximo 2 minutos para escanear QR Code)...")
+            logger.info("⏳ Waiting for authentication (max 2 minutes to scan QR Code)...")
             page.wait_for_selector("#pane-side", timeout=120000)
-            logger.success("✅ WhatsApp carregado e autenticado!")
-            time.sleep(5)  # Aguarda um pouco para garantir que tudo foi carregado
+            logger.success("✅ WhatsApp loaded and authenticated!")
+            time.sleep(5)  # Wait a bit to ensure everything loaded
             
-            # ✅ Com launch_persistent_context, a sessão é salva automaticamente!
-            logger.success("✅ Sessão será persistida automaticamente pelo navegador.")
+            # ✅ With launch_persistent_context, session is saved automatically!
+            logger.success("✅ Session will be persisted automatically by browser.")
                 
         except Exception as e:
-            logger.error(f"❌ Erro ao conectar ao WhatsApp: {e}")
-            _salvar_sessao_e_limpar()
+            logger.error(f"❌ Error connecting to WhatsApp: {e}")
+            _save_session_and_cleanup()
             return
         
-        logger.info("Carregando WhatsApp...")
+        logger.info("Loading WhatsApp...")
         try:
             page.goto("https://web.whatsapp.com/")
             page.wait_for_selector("#pane-side", timeout=40000)
-            logger.success("✅ WhatsApp carregado. Iniciando disparos...")
+            logger.success("✅ WhatsApp loaded. Starting message dispatch...")
         except Exception as e:
-            logger.error(f"Erro ao carregar WhatsApp: {e}")
-            _salvar_sessao_e_limpar()
+            logger.error(f"Error loading WhatsApp: {e}")
+            _save_session_and_cleanup()
             return
 
-        total_enviados = 0
+        total_sent = 0
 
         for count, (index, row) in enumerate(df.iterrows(), 1):
-            nome_bruto = row['Nome'] if not pd.isna(row['Nome']) else "Cliente"
-            # Formata o nome: minúsculo com primeira letra maiúscula e só primeiro nome
-            nome = formatar_nome(nome_bruto)
+            raw_name = row['Nome'] if not pd.isna(row['Nome']) else "Cliente"
+            # Format name: lowercase with first letter capitalized, first name only
+            formatted_name = format_name(raw_name)
             
-            logger.debug(f"DEBUG: Processando linha {count}: {nome_bruto} -> {nome}")
+            logger.debug(f"DEBUG: Processing row {count}: {raw_name} -> {formatted_name}")
             
-            # Itera sobre as colunas de telefone definidas
-            for col_tel in COLUNAS_TELEFONE:
-                if col_tel not in df.columns: 
-                    logger.debug(f"DEBUG: Coluna {col_tel} não existe no Excel")
+            # Track all phones and their statuses for this contact
+            phones_sent = []
+            contact_status = "PENDING"
+            
+            # Iterate over ALL phone columns for this contact
+            for phone_col in PHONE_COLUMNS:
+                if phone_col not in df.columns: 
+                    logger.debug(f"DEBUG: Column {phone_col} doesn't exist in Excel")
                     continue
                 
-                telefone_bruto = row[col_tel]
-                logger.debug(f"DEBUG: Telefone bruto de {col_tel}: {telefone_bruto}")
+                raw_phone = row[phone_col]
+                logger.debug(f"DEBUG: Raw phone from {phone_col}: {raw_phone}")
                 
-                telefone = limpar_numero(telefone_bruto)
-                logger.debug(f"DEBUG: Telefone limpo: {telefone}")
+                phone = clean_phone_number(raw_phone)
+                logger.debug(f"DEBUG: Clean phone: {phone}")
                 
-                if not telefone: 
-                    logger.warning(f"⚠️ Telefone inválido para {nome}: {telefone_bruto}")
-                    logger.info(f"   (Número muito curto ou sem dígitos - pode ser telefone fixo ou formato incorreto)")
-                    continue
+                if not phone: 
+                    continue  # Skip invalid phones silently
 
-                logger.success(f"✅ Telefone válido: {telefone}")
+                logger.success(f"✅ Valid phone: {phone}")
+                messages_sent_for_phone = 0  # Reset counter for each phone
 
-                # --- ENVIA 2 MENSAGENS POR CONTATO ---
-                for num_msg in [1, 2]:
-                    if num_msg == 1:
-                        mensagem = MENSAGEM_BASE.format(nome=nome)
-                        logger.info(f"[{count}] 📱 Processando {nome} - {telefone}... (Mensagem {num_msg}/2)")
+                # --- SEND 3 MESSAGES PER PHONE ---
+                for msg_num in [1, 2, 3]:
+                    if msg_num == 1:
+                        message = MESSAGE_TEMPLATE_1.format(name=formatted_name)
+                        logger.info(f"[{count}] 📱 Processing {formatted_name} - {phone}... (Message {msg_num}/3)")
+                    elif msg_num == 2:
+                        message = MESSAGE_TEMPLATE_2.format(name=formatted_name, condominio=CONDOMINIO)
+                        logger.info(f"   → Sending second message...")
                     else:
-                        mensagem = MENSAGEM_BASE_2.format(nome=nome) if "{nome}" in MENSAGEM_BASE_2 else MENSAGEM_BASE_2
-                        logger.info(f"   → Enviando segunda mensagem...")
+                        message = MESSAGE_TEMPLATE_3.format(name=formatted_name) if "{name}" in MESSAGE_TEMPLATE_3 else MESSAGE_TEMPLATE_3
+                        logger.info(f"   → Sending third message...")
                     
-                    msg_encoded = urllib.parse.quote(mensagem)
+                    encoded_message = urllib.parse.quote(message)
                     
                     # URL Injection
-                    link = f"https://web.whatsapp.com/send?phone={telefone}&text={msg_encoded}"
+                    link = f"https://web.whatsapp.com/send?phone={phone}&text={encoded_message}"
                     
-                    # --- Lógica de Decisão (Race Condition) ---
-                    # Seletores ESPECÍFICOS para o campo de MENSAGEM (não de pesquisa)
-                    seletor_input = 'div[data-lexical-editor="true"][aria-label*="Digitar"]'
-                    seletor_input_alt = 'div[data-lexical-editor="true"]'
-                    seletor_input_fallback = 'div[aria-placeholder="Digite uma mensagem"]'
+                    # --- Decision Logic (Race Condition) ---
+                    # SPECIFIC selectors for MESSAGE field (not search)
+                    input_selector = 'div[data-lexical-editor="true"][aria-label*="Digitar"]'
+                    input_selector_alt = 'div[data-lexical-editor="true"]'
+                    input_selector_fallback = 'div[aria-placeholder="Digite uma mensagem"]'
                     
                     try:
                         page.goto(link)
                         
-                        # Aguarda a página carregar o chat ou o erro
+                        # Wait for page to load chat or error
                         page.wait_for_load_state("networkidle")
                         
-                        # VALIDAÇÃO 1: Detecta mensagem de erro "O número de telefone compartilhado por url é inválido"
-                        try:
-                            # Procura pela mensagem de erro exata do WhatsApp
-                            error_msg = page.query_selector('text=O número de telefone compartilhado por url é inválido')
-                            if error_msg:
-                                logger.warning(f"   ⚠️ WhatsApp rejeitou o número {telefone}")
-                                logger.info(f"      Mensagem: 'O número de telefone compartilhado por url é inválido'")
-                                logger.info(f"      Possível causa: Número não tem WhatsApp ou é inválido")
-                                break  # Sai do loop de mensagens (pula para próximo telefone)
-                        except:
-                            pass  # Se não encontrar, continua
+                        # VALIDATION 1: Check for specific error messages from WhatsApp
+                        error_detected = False
+                        error_reason = ""
                         
-                        # VALIDAÇÃO 2: Verifica se há alguma mensagem de erro na página
-                        try:
-                            # Procura por elementos de erro comuns do WhatsApp
-                            error_elements = page.query_selector_all('[role="alert"]')
-                            if error_elements:
-                                for elem in error_elements:
-                                    error_text = elem.text_content()
-                                    if error_text and ("inválido" in error_text.lower() or "error" in error_text.lower()):
-                                        logger.warning(f"   ⚠️ Erro detectado na página: {error_text}")
-                                        break  # Sai do loop de mensagens
-                        except:
-                            pass  # Se não encontrar, continua
+                        # Check for "number is not on WhatsApp" error
+                        error_patterns = [
+                            ('text=não está no WhatsApp', 'Número não está no WhatsApp'),
+                            ('text=não tem o WhatsApp', 'Número não tem WhatsApp'),
+                            ('text=O número de telefone compartilhado por url é inválido', 'Número inválido'),
+                            ('text=número invalido', 'Número inválido'),
+                            ('[role="alert"]', 'Alerta geral'),
+                        ]
                         
-                        # VALIDAÇÃO 3: Tenta encontrar o campo de mensagem
+                        try:
+                            for selector, reason in error_patterns:
+                                error_elem = page.query_selector(selector)
+                                if error_elem:
+                                    error_text = error_elem.text_content() if hasattr(error_elem, 'text_content') else str(error_elem)
+                                    logger.warning(f"   ⚠️ WhatsApp error detected para {phone}")
+                                    logger.info(f"      Motivo: {reason}")
+                                    if error_text and error_text.strip():
+                                        logger.debug(f"      Mensagem: {error_text}")
+                                    error_detected = True
+                                    error_reason = reason
+                                    break
+                        except Exception as e:
+                            logger.debug(f"   🔍 Erro ao verificar padrões de erro: {e}")
+                        
+                        # If error detected, skip this number and save with status
+                        if error_detected:
+                            logger.info(f"      → Pulando para próximo número ({error_reason})")
+                            # Mark as INVALID in database when error is detected
+                            try:
+                                status = f"INVALID_{error_reason.replace(' ', '_')}"
+                                message_repo.add_message_sync(name=raw_name, phone=phone, status=status)
+                                logger.debug(f"      Salvo como: {status}")
+                            except Exception as db_e:
+                                logger.debug(f"      Erro ao salvar status: {db_e}")
+                            break  # Exit message loop (skip to next phone)
+                        
+                        # VALIDATION 2: Try to find message field
                         input_box = None
                         
                         try:
-                            input_box = page.wait_for_selector(seletor_input, timeout=10000)
+                            input_box = page.wait_for_selector(input_selector, timeout=10000)
                         except:
                             pass
                         
                         if not input_box:
                             try:
-                                input_box = page.wait_for_selector(seletor_input_alt, timeout=10000)
+                                input_box = page.wait_for_selector(input_selector_alt, timeout=10000)
                             except:
                                 pass
                         
                         if not input_box:
                             try:
-                                input_box = page.wait_for_selector(seletor_input_fallback, timeout=25000)
+                                input_box = page.wait_for_selector(input_selector_fallback, timeout=25000)
                             except:
                                 pass
                         
-                        # Se não encontrou campo de mensagem, pode ser que:
-                        # 1. O número não tem WhatsApp
-                        # 2. O número está bloqueado
-                        # 3. Houve timeout na página
+                        # If message field not found, possible reasons:
+                        # 1. Number doesn't have WhatsApp
+                        # 2. Number is blocked
+                        # 3. Page timeout
                         if not input_box:
-                            logger.warning(f"   ⚠️ Não foi possível enviar para {telefone}")
-                            logger.info(f"      Possível causa:")
-                            logger.info(f"      • Este número não tem WhatsApp ativo")
-                            logger.info(f"      • Ou o número está bloqueado")
-                            logger.info(f"      • Ou houve timeout na página")
-                            continue  # Pula para o próximo telefone
+                            logger.warning(f"   ⚠️ Não foi possível enviar para {phone}")
+                            logger.info(f"      Possíveis motivos:")
+                            logger.info(f"      • Número não tem WhatsApp ativo")
+                            logger.info(f"      • Número está bloqueado")
+                            logger.info(f"      • Timeout na página")
+                            
+                            # Save as TIMEOUT/NOT_FOUND
+                            try:
+                                message_repo.add_message_sync(name=raw_name, phone=phone, status="NOT_FOUND")
+                                logger.debug(f"      Salvo como: NOT_FOUND")
+                            except Exception as db_e:
+                                logger.debug(f"      Erro ao salvar status: {db_e}")
+                            
+                            continue  # Skip to next phone
                         
                         if input_box:
-                            # Verifica se encontrou o elemento certo (da conversa, não da pesquisa)
+                            # Verify correct element (conversation, not search)
                             aria_label = input_box.get_attribute("aria-label") or ""
-                            logger.debug(f"   🔎 Elemento encontrado - aria-label: '{aria_label}'")
+                            logger.debug(f"   🔎 Element found - aria-label: '{aria_label}'")
                             
-                            # VALIDAÇÃO: Garante que NÃO é o campo de pesquisa
-                            # O campo de pesquisa tem aria-label com "Pesquisar" ou vazio
-                            # O campo de mensagem tem aria-label com "Digitar"
+                            # VALIDATION: Ensure it's NOT the search field
                             is_message_field = "digitar" in aria_label.lower()
                             is_search_field = "pesquisar" in aria_label.lower() or "search" in aria_label.lower()
                             
                             if is_search_field:
-                                logger.warning(f"   ⚠️ Encontrado CAMPO DE PESQUISA, não de mensagem! Pulando...")
-                                raise Exception("Campo de pesquisa detectado, tentando outro seletor")
+                                logger.warning(f"   ⚠️ Found SEARCH FIELD, not message field! Skipping...")
+                                raise Exception("Search field detected, trying another selector")
                             
-                            logger.debug(f"   ✅ Validado: É um campo de mensagem")
+                            logger.debug(f"   ✅ Validated: It's a message field")
                             
-                            # Se achou o campo, vamos garantir que o texto está lá
-                            logger.debug("   ⏳ Aguardando processamento do texto...")
+                            # If found the field, ensure text is there
+                            logger.debug("   ⏳ Waiting for text processing...")
                             time.sleep(8)
                             
-                            # Verifica se tem texto no campo (da URL)
+                            # Check if field has text (from URL)
                             text_content = input_box.text_content()
-                            logger.debug(f"   📝 Conteúdo do campo (URL): '{text_content}'")
+                            logger.debug(f"   📝 Field content (URL): '{text_content}'")
                             
-                            # Se o campo está vazio, digita manualmente
+                            # If field is empty, type manually
                             if not text_content or text_content.strip() == "":
-                                logger.info(f"   ⌨️ Campo vazio - digitando mensagem manualmente...")
+                                logger.info(f"   ⌨️ Empty field - typing message manually...")
                                 
-                                # Garante que o campo está focado e clica múltiplas vezes
-                                input_box.click()
-                                time.sleep(0.3)
-                                input_box.click()
-                                time.sleep(0.3)
+                                try:
+                                    # Ensure field is focused and click multiple times
+                                    input_box.click()
+                                    time.sleep(0.3)
+                                    input_box.click()
+                                    time.sleep(0.3)
+                                    input_box.focus()
+                                    time.sleep(0.5)
+                                    
+                                    # Clear field before typing (in case there's something)
+                                    input_box.fill("")
+                                    time.sleep(0.3)
+                                    
+                                    # Type message using fill() which is more reliable than keyboard.type()
+                                    input_box.fill(message)
+                                    time.sleep(5)
+                                    
+                                    logger.debug(f"   ✍️ Message typed via fill()")
+                                except Exception as type_error:
+                                    logger.error(f"   ❌ Error typing message: {type_error}")
+                                    logger.info(f"      Skipping message...")
+                                    continue
+                            else:
+                                logger.debug(f"   ✅ Text already in field (via URL)")
+                            
+                            # Now send by pressing Enter
+                            try:
+                                logger.debug("   🔍 Sending message...")
                                 input_box.focus()
-                                time.sleep(0.5)
-                                
-                                # Limpa o campo antes de digitar (caso tenha algo)
-                                input_box.fill("")
-                                time.sleep(0.3)
-                                
-                                # Digita a mensagem usando fill() que é mais confiável que keyboard.type()
-                                input_box.fill(mensagem)
+                                time.sleep(1)
+                                page.keyboard.press("Enter")
+                                logger.debug(f"   ⏸️ Waiting for send confirmation...")
                                 time.sleep(5)
                                 
-                                logger.debug(f"   ✍️ Mensagem digitada via fill()")
-                            else:
-                                logger.debug(f"   ✅ Texto já está no campo (via URL)")
-                            
-                            # Agora envia pressionando Enter
-                            logger.debug("   🔍 Enviando mensagem...")
-                            input_box.focus()
-                            time.sleep(1)
-                            page.keyboard.press("Enter")
-                            logger.debug(f"   ⏸️ Aguardando confirmação de envio...")
-                            time.sleep(5)
-                            
-                            # Verifica se o campo ficou vazio (indicativo de que foi enviado)
-                            text_after = input_box.text_content()
-                            if text_after is None:
-                                text_after = ""
-                                
-                            if text_after == "" or text_after.strip() == "":
-                                logger.success(f"   ✅ Mensagem {num_msg} enviada para {telefone}")
-                                total_enviados += 1
-                            else:
-                                logger.warning(f"   ⚠️ Campo ainda tem texto: '{text_after}' - Tentando novamente...")
-                                # Seleciona tudo e apaga
-                                page.keyboard.press("Control+A")
-                                time.sleep(0.2)
-                                page.keyboard.press("Delete")
-                                time.sleep(1)
+                                # Check if field is empty (indicates message was sent)
+                                text_after = input_box.text_content()
+                                if text_after is None:
+                                    text_after = ""
+                                    
+                                if text_after == "" or text_after.strip() == "":
+                                    logger.success(f"   ✅ Message {msg_num} sent to {phone}")
+                                    total_sent += 1
+                                    messages_sent_for_phone += 1
+                                else:
+                                    logger.warning(f"   ⚠️ Field still has text: '{text_after}' - Trying again...")
+                                    # Select all and delete
+                                    try:
+                                        page.keyboard.press("Control+A")
+                                        time.sleep(0.2)
+                                        page.keyboard.press("Delete")
+                                        time.sleep(1)
+                                    except Exception as clear_error:
+                                        logger.debug(f"      Error clearing field: {clear_error}")
+                            except Exception as send_error:
+                                logger.error(f"   ❌ Error sending message: {send_error}")
+                                logger.info(f"      Will retry with next message...")
+                                continue
+
                         else:
-                            logger.error(f"   ❌ Não foi encontrado campo de mensagem")
+                            logger.error(f"   ❌ Message field not found")
                         
-                        # --- DELAY ENTRE MENSAGENS ---
-                        if num_msg == 1:  # Se for a primeira mensagem, espera antes da segunda
-                            tempo_espera = DELAY_ENTRE_MENSAGENS
-                            logger.info(f"   💤 Aguardando {tempo_espera}s antes da 2ª mensagem...")
-                            time.sleep(tempo_espera)
-                        else:  # Se for a segunda mensagem, faz o delay grande antes do próximo contato
-                            tempo_espera = random.randint(DELAY_MIN, DELAY_MAX)
-                            logger.info(f"   💤 Aguardando {tempo_espera}s antes do próximo contato...")
-                            time.sleep(tempo_espera)
+                        # --- DELAY BETWEEN MESSAGES ---
+                        if msg_num < 3:  # If not last message, wait before next
+                            wait_time = DELAY_BETWEEN_MESSAGES
+                            logger.info(f"   💤 Waiting {wait_time}s before message {msg_num + 1}...")
+                            time.sleep(wait_time)
+                        else:  # If last message, do long delay before next contact
+                            wait_time = random.randint(DELAY_MIN, DELAY_MAX)
+                            logger.info(f"   💤 Waiting {wait_time}s before next phone...")
+                            time.sleep(wait_time)
+                        
+                        # Track successful phone
+                        if messages_sent_for_phone > 0:
+                            phones_sent.append(phone)
 
                     except Exception as e_wait:
-                        logger.error(f"   ⚠️ Erro ao processar chat: {e_wait}")
+                        logger.error(f"   ❌ Error processing chat: {type(e_wait).__name__}: {e_wait}")
+                        logger.debug(f"      Details: {str(e_wait)}")
+                        
+                        # Save as ERROR if some messages were sent
+                        if messages_sent_for_phone > 0:
+                            phones_sent.append(phone)  # Still add to list even if error
+                
+                # --- SAVE TO DATABASE AFTER ALL PHONES FOR THIS CONTACT ---
+                if phones_sent:
+                    logger.debug(f"DEBUG: Saving contact to DB... Name: {raw_name}, Phones: {phones_sent}")
+                    try:
+                        contact_status = "SENT" if len(phones_sent) == len([p for p in [row.get(col) for col in PHONE_COLUMNS] if p and isinstance(p, (int, float, str))]) else "PARTIAL"
+                        logger.debug(f"DEBUG: Calling add_message_batch_sync with name='{raw_name}', phones={phones_sent}, status='{contact_status}'")
+                        result = message_repo.add_message_batch_sync(name=raw_name, phones=phones_sent, status=contact_status)
+                        logger.info(f"   💾 Saved to DB: {raw_name} - {len(phones_sent)} phones - {contact_status}")
+                        logger.debug(f"DEBUG: Save successful! ID: {result.id if result and hasattr(result, 'id') else 'None'}")
+                    except Exception as e:
+                        logger.error(f"Error saving status to database: {e}", exc_info=True)
+                        logger.debug(f"DEBUG: ERROR SAVING TO DB: {type(e).__name__}: {e}")
 
-        logger.success(f"🎉 Fim do processamento. Total enviados: {total_enviados}")
+        logger.success(f"🎉 Processing complete. Total sent: {total_sent}")
         
-        # Salva a sessão ANTES de fechar
-        logger.info("💾 Salvando sessão...")
+        # Save session BEFORE closing
+        logger.info("💾 Saving session...")
         try:
             _context.storage_state(path=STATE_FILE)
-            time.sleep(1)  # Aguarda a escrita em disco
+            time.sleep(1)  # Wait for disk write
             
-            # Verifica se foi salvo
+            # Verify if saved
             if os.path.exists(STATE_FILE) and os.path.getsize(STATE_FILE) > 100:
-                logger.success(f"✅ Sessão salva com sucesso!")
+                logger.success(f"✅ Session saved successfully!")
             else:
-                logger.warning("⚠️ Arquivo pode não ter sido salvo corretamente")
+                logger.warning("⚠️ File may not have been saved correctly")
         except Exception as e:
-            logger.error(f"❌ Erro ao salvar sessão: {e}")
-        
-        # Fecha o contexto e navegador
-        _salvar_sessao_e_limpar()
+            logger.error(f"❌ Error saving session: {e}")
+        finally:
+            # Close context and browser
+            _save_session_and_cleanup()
+            
+            # Close database connection
+            try:
+                logger.info("💾 Closing database connection...")
+                loop = asyncio.get_event_loop()
+                if loop.is_closed():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                loop.run_until_complete(message_repo.close_connection())
+                logger.success("✅ Database connection closed!")
+            except Exception as db_close_error:
+                logger.warning(f"⚠️ Error closing database: {db_close_error}")
 
 
 if __name__ == "__main__":
-    enviar_mensagens()
+    send_messages()

@@ -1,5 +1,5 @@
-"""Utilitários do WhatsApp."""
-from .phone_formatter import limpar_numero
-from .text_formatter import formatar_nome
+"""WhatsApp utilities."""
+from .phone_formatter import clean_phone_number
+from .text_formatter import format_name
 
-__all__ = ["limpar_numero", "formatar_nome"]
+__all__ = ["clean_phone_number", "format_name"]

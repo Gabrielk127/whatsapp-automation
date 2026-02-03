@@ -1,5 +1,5 @@
-"""Módulo robot - Scripts de automação do WhatsApp."""
+"""Robot module - WhatsApp automation scripts."""
 from .auth import save_session
-from .sender import enviar_mensagens
+from .sender import send_messages
 
-__all__ = ['save_session', 'enviar_mensagens']
+__all__ = ['save_session', 'send_messages']
