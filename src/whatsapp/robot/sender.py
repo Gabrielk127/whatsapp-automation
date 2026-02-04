@@ -16,6 +16,8 @@ from ..config import (
 )
 from ..utils import clean_phone_number, format_name
 from ...repositories.message_repository import MessageRepository
+from ...utils.structured_logger import StructuredLogger
+from ...utils.metrics import SessionMetrics
 
 # Global variables for cleanup
 _context = None
@@ -75,6 +77,9 @@ def send_messages():
         - Column 'Nome': Contact name (will be formatted)
         - Columns 'Tel1', 'Tel2', etc: Phone numbers
     """
+    # Initialize metrics tracking
+    metrics = SessionMetrics()
+    
     # Load data
     try:
         df = pd.read_excel(EXCEL_FILE)
@@ -131,8 +136,10 @@ def send_messages():
         # Wait for chat list to load OR wait for user to scan QR
         try:
             logger.info("⏳ Waiting for authentication (max 2 minutes to scan QR Code)...")
+            StructuredLogger.log_authentication("started")
             page.wait_for_selector("#pane-side", timeout=120000)
             logger.success("✅ WhatsApp loaded and authenticated!")
+            StructuredLogger.log_authentication("success")
             time.sleep(5)  # Wait a bit to ensure everything loaded
             
             # ✅ With launch_persistent_context, session is saved automatically!
@@ -140,6 +147,7 @@ def send_messages():
                 
         except Exception as e:
             logger.error(f"❌ Error connecting to WhatsApp: {e}")
+            StructuredLogger.log_authentication("failed", error=str(e))
             _save_session_and_cleanup()
             return
         
@@ -161,6 +169,7 @@ def send_messages():
             formatted_name = format_name(raw_name)
             
             logger.debug(f"DEBUG: Processing row {count}: {raw_name} -> {formatted_name}")
+            metrics.record_contact_processed()
             
             # Track all phones and their statuses for this contact
             phones_sent = []
@@ -178,10 +187,12 @@ def send_messages():
                 phone = clean_phone_number(raw_phone)
                 logger.debug(f"DEBUG: Clean phone: {phone}")
                 
-                if not phone: 
+                if not phone:
+                    metrics.record_invalid_phone()
                     continue  # Skip invalid phones silently
 
                 logger.success(f"✅ Valid phone: {phone}")
+                metrics.record_phone_processed()
                 messages_sent_for_phone = 0  # Reset counter for each phone
 
                 # --- SEND 3 MESSAGES PER PHONE ---
@@ -244,13 +255,24 @@ def send_messages():
                         # If error detected, skip this number and save with status
                         if error_detected:
                             logger.info(f"      → Pulando para próximo número ({error_reason})")
+                            metrics.record_not_found()
+                            StructuredLogger.log_message_attempt(
+                                contact_name=raw_name,
+                                phone=phone,
+                                message_number=msg_num,
+                                total_messages=3,
+                                status="invalid",
+                                error=error_reason
+                            )
                             # Mark as INVALID in database when error is detected
                             try:
                                 status = f"INVALID_{error_reason.replace(' ', '_')}"
                                 message_repo.add_message_sync(name=raw_name, phone=phone, status=status)
                                 logger.debug(f"      Salvo como: {status}")
+                                StructuredLogger.log_database_operation("save", "success", record_count=1)
                             except Exception as db_e:
                                 logger.debug(f"      Erro ao salvar status: {db_e}")
+                                StructuredLogger.log_database_operation("save", "failed", error=str(db_e))
                             break  # Exit message loop (skip to next phone)
                         
                         # VALIDATION 2: Try to find message field
@@ -284,12 +306,24 @@ def send_messages():
                             logger.info(f"      • Número está bloqueado")
                             logger.info(f"      • Timeout na página")
                             
+                            metrics.record_not_found()
+                            StructuredLogger.log_message_attempt(
+                                contact_name=raw_name,
+                                phone=phone,
+                                message_number=msg_num,
+                                total_messages=3,
+                                status="not_found",
+                                error="Message field not found"
+                            )
+                            
                             # Save as TIMEOUT/NOT_FOUND
                             try:
                                 message_repo.add_message_sync(name=raw_name, phone=phone, status="NOT_FOUND")
                                 logger.debug(f"      Salvo como: NOT_FOUND")
+                                StructuredLogger.log_database_operation("save", "success", record_count=1)
                             except Exception as db_e:
                                 logger.debug(f"      Erro ao salvar status: {db_e}")
+                                StructuredLogger.log_database_operation("save", "failed", error=str(db_e))
                             
                             continue  # Skip to next phone
                         
@@ -363,6 +397,14 @@ def send_messages():
                                     logger.success(f"   ✅ Message {msg_num} sent to {phone}")
                                     total_sent += 1
                                     messages_sent_for_phone += 1
+                                    metrics.record_success()
+                                    StructuredLogger.log_message_attempt(
+                                        contact_name=raw_name,
+                                        phone=phone,
+                                        message_number=msg_num,
+                                        total_messages=3,
+                                        status="success"
+                                    )
                                 else:
                                     logger.warning(f"   ⚠️ Field still has text: '{text_after}' - Trying again...")
                                     # Select all and delete
@@ -376,6 +418,15 @@ def send_messages():
                             except Exception as send_error:
                                 logger.error(f"   ❌ Error sending message: {send_error}")
                                 logger.info(f"      Will retry with next message...")
+                                metrics.record_failure("send_error")
+                                StructuredLogger.log_message_attempt(
+                                    contact_name=raw_name,
+                                    phone=phone,
+                                    message_number=msg_num,
+                                    total_messages=3,
+                                    status="failed",
+                                    error=str(send_error)
+                                )
                                 continue
 
                         else:
@@ -398,6 +449,15 @@ def send_messages():
                     except Exception as e_wait:
                         logger.error(f"   ❌ Error processing chat: {type(e_wait).__name__}: {e_wait}")
                         logger.debug(f"      Details: {str(e_wait)}")
+                        metrics.record_failure(type(e_wait).__name__)
+                        StructuredLogger.log_message_attempt(
+                            contact_name=raw_name,
+                            phone=phone,
+                            message_number=msg_num,
+                            total_messages=3,
+                            status="error",
+                            error=str(e_wait)
+                        )
                         
                         # Save as ERROR if some messages were sent
                         if messages_sent_for_phone > 0:
@@ -417,6 +477,38 @@ def send_messages():
                         logger.debug(f"DEBUG: ERROR SAVING TO DB: {type(e).__name__}: {e}")
 
         logger.success(f"🎉 Processing complete. Total sent: {total_sent}")
+        
+        # Finalize metrics and log summary
+        metrics.finalize()
+        summary = metrics.get_summary()
+        
+        logger.info("=" * 60)
+        logger.info("📊 SESSION SUMMARY")
+        logger.info("=" * 60)
+        logger.info(f"Duration: {summary['duration_minutes']:.1f} minutes")
+        logger.info(f"Contacts processed: {summary['total_contacts']}")
+        logger.info(f"Phones processed: {summary['total_phones_processed']}")
+        logger.info(f"Messages sent: {summary['messages_sent']}")
+        logger.info(f"Messages failed: {summary['messages_failed']}")
+        logger.info(f"Invalid phones: {summary['invalid_phones']}")
+        logger.info(f"Not found on WhatsApp: {summary['not_found_phones']}")
+        logger.info(f"Success rate: {summary['success_rate_percent']:.1f}%")
+        logger.info(f"Messages per minute: {summary['messages_per_minute']:.1f}")
+        if summary['errors_by_type']:
+            logger.info(f"Errors by type: {summary['errors_by_type']}")
+        logger.info("=" * 60)
+        
+        # Log structured summary for analysis
+        StructuredLogger.log_session_summary(
+            total_contacts=summary['total_contacts'],
+            total_phones_processed=summary['total_phones_processed'],
+            total_messages_sent=summary['messages_sent'],
+            total_failures=summary['messages_failed'],
+            invalid_phones=summary['invalid_phones'],
+            not_found_phones=summary['not_found_phones'],
+            duration_seconds=summary['duration_seconds'],
+            errors_by_type=summary['errors_by_type']
+        )
         
         # Save session BEFORE closing
         logger.info("💾 Saving session...")
