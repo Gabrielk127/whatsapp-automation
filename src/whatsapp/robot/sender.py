@@ -96,7 +96,12 @@ def send_messages():
         
         # Initialize session in MongoDB for ETA calculations
         if db_connected:
-            mongo_repo.init_session(len(df))
+            mongo_repo.init_session(
+                total_rows=len(df),
+                delay_min=DELAY_MIN,
+                delay_max=DELAY_MAX,
+                delay_between=DELAY_BETWEEN_MESSAGES
+            )
             
     except FileNotFoundError:
         logger.error(f"Error: File '{EXCEL_FILE}' not found.")
@@ -180,14 +185,20 @@ def send_messages():
                     continue
                 
                 raw_phone = row[phone_col]
+                
+                # IMPORTANT: Skip empty cells silently without counting as invalid
+                if pd.isna(raw_phone) or str(raw_phone).strip() == "" or raw_phone == 0:
+                    continue
+                
                 logger.debug(f"DEBUG: Raw phone from {phone_col}: {raw_phone}")
                 
                 phone = clean_phone_number(raw_phone)
                 logger.debug(f"DEBUG: Clean phone: {phone}")
                 
                 if not phone:
+                    # Only record as invalid if there was actually something in the cell
                     metrics.record_invalid_phone()
-                    continue  # Skip invalid phones silently
+                    continue
 
                 # Validate: only mobile phones (skip landlines)
                 if not is_mobile_phone(phone):
@@ -429,10 +440,9 @@ def send_messages():
                             logger.info(f"   💤 Waiting {wait_time}s before next phone...")
                             time.sleep(wait_time)
                         
-                        # Track successful phone
-                        if messages_sent_for_phone > 0:
-                            phones_sent.append(phone)
-
+                        # Track successful messages for this phone
+                        pass # Moved append outside the message loop
+                
                     except Exception as e_wait:
                         logger.error(f"   ❌ Error processing chat: {type(e_wait).__name__}: {e_wait}")
                         logger.debug(f"      Details: {str(e_wait)}")
@@ -447,53 +457,56 @@ def send_messages():
                         )
                         
                         # Save as ERROR if some messages were sent
-                        if messages_sent_for_phone > 0:
-                            phones_sent.append(phone)  # Still add to list even if error
-                
-                # --- SAVE CONTACT TO MONGODB ---
-                # Calculate funnel metrics
-                phones_total_raw = 0
-                phones_valid_count = 0
-                valid_mobile_phones = []
-                
-                for col in PHONE_COLUMNS:
-                    raw = row.get(col)
-                    if raw and not pd.isna(raw) and str(raw).strip():
-                        phones_total_raw += 1
-                        cleaned = clean_phone_number(raw)
-                        if cleaned:
-                            phones_valid_count += 1
-                            if is_mobile_phone(cleaned):
-                                valid_mobile_phones.append(cleaned)
-                
-                phones_found = len(valid_mobile_phones)
-                phones_with_msg = len(phones_sent)
-                
-                # Determine status
-                if phones_found == 0:
-                    contact_status = "NO_MOBILE"  # No valid mobile phones
-                elif phones_with_msg == 0:
-                    contact_status = "ERROR"
-                elif phones_with_msg == phones_found:
-                    contact_status = "SUCCESS"
-                else:
-                    contact_status = "PARTIAL"
-                
-                if db_connected:
-                    try:
-                        mongo_repo.save_contact(
-                            name=raw_name,
-                            status=contact_status,
-                            phones_found=phones_found,
-                            phones_sent=phones_with_msg,
-                            phones=phones_sent,
-                            condominio=CONDOMINIO,
-                            phones_total=phones_total_raw,
-                            phones_valid=phones_valid_count
-                        )
-                        logger.info(f"   💾 MongoDB: {raw_name} | {contact_status} | {phones_with_msg}/{phones_found} phones")
-                    except Exception as e:
-                        logger.debug(f"   ⚠️ Could not save to MongoDB: {e}")
+                        pass # Moved append outside the message loop
+            
+                # After trying all 3 messages for this phone, add to list if at least one was sent
+                if messages_sent_for_phone > 0:
+                    phones_sent.append(phone)
+
+            # --- SAVE CONTACT TO MONGODB (OUTSIDE PHONE LOOP) ---
+            # Calculate funnel metrics once per contact line
+            phones_total_raw = 0
+            phones_valid_count = 0
+            valid_mobile_phones = []
+            
+            for col in PHONE_COLUMNS:
+                raw = row.get(col)
+                if raw and not pd.isna(raw) and str(raw).strip() and raw != 0:
+                    phones_total_raw += 1
+                    cleaned = clean_phone_number(raw)
+                    if cleaned:
+                        phones_valid_count += 1
+                        if is_mobile_phone(cleaned):
+                            valid_mobile_phones.append(cleaned)
+            
+            phones_found = len(valid_mobile_phones)
+            phones_with_msg = len(phones_sent)
+            
+            # Determine overall contact status
+            if phones_found == 0:
+                contact_status = "NO_MOBILE"  # No valid mobile phones
+            elif phones_with_msg == 0:
+                contact_status = "ERROR"
+            elif phones_with_msg == phones_found:
+                contact_status = "SUCCESS"
+            else:
+                contact_status = "PARTIAL"
+            
+            if db_connected:
+                try:
+                    mongo_repo.save_contact(
+                        name=raw_name,
+                        status=contact_status,
+                        phones_found=phones_found,
+                        phones_sent=phones_with_msg,
+                        phones=phones_sent,
+                        condominio=CONDOMINIO,
+                        phones_total=phones_total_raw,
+                        phones_valid=phones_valid_count
+                    )
+                    logger.info(f"   💾 MongoDB: {raw_name} | {contact_status} | {phones_with_msg}/{phones_found} phones")
+                except Exception as e:
+                    logger.debug(f"   ⚠️ Could not save to MongoDB: {e}")
 
 
 

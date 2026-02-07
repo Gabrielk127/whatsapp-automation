@@ -19,9 +19,9 @@ CONDOMINIO = "Residencial Example"
 PHONE_COLUMNS = ['Telefone 1', 'Telefone 2', 'Telefone 3', 'Telefone 4', 'Telefone 5']
 
 # Delays (seconds)
-DELAY_MIN = 60
-DELAY_MAX = 180
-DELAY_BETWEEN_MESSAGES = 10
+DELAY_MIN = 5
+DELAY_MAX = 10
+DELAY_BETWEEN_MESSAGES = 5
 
 # User Agent
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"

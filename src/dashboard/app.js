@@ -356,9 +356,8 @@ function updateEtaDisplay(data) {
         return;
     }
 
-    // Speed
-    const speed = data.contacts_per_minute || 0;
-    document.getElementById('current-speed').textContent = speed.toFixed(1);
+    // Progress (X/Y)
+    document.getElementById('current-speed').textContent = data.progress || '0/0';
 
     // ETA
     const etaSeconds = data.eta_seconds || 0;
@@ -370,7 +369,7 @@ function updateEtaDisplay(data) {
             document.getElementById('current-eta').textContent = `${mins}m`;
         }
     } else {
-        document.getElementById('current-eta').textContent = data.remaining > 0 ? 'Calculando...' : 'Concluído';
+        document.getElementById('current-eta').textContent = data.remaining > 0 ? 'Calcular' : 'Fim';
     }
 }
 

@@ -286,8 +286,8 @@ class MongoRepository:
 
     # ==================== REAL-TIME SESSION METADATA ====================
 
-    def init_session(self, total_rows: int) -> bool:
-        """Initialize session metadata with total rows to process."""
+    def init_session(self, total_rows: int, delay_min: int = 60, delay_max: int = 180, delay_between: int = 10) -> bool:
+        """Initialize session metadata with total rows and delays for ETA."""
         if not self.is_connected():
             return False
         
@@ -297,6 +297,9 @@ class MongoRepository:
                 {"_id": "current_session"},
                 {"$set": {
                     "total_rows": total_rows,
+                    "delay_min": delay_min,
+                    "delay_max": delay_max,
+                    "delay_between": delay_between,
                     "start_time": datetime.utcnow(),
                     "status": "RUNNING",
                     "last_update": datetime.utcnow()
@@ -324,33 +327,20 @@ class MongoRepository:
             # Get processed count
             processed_count = mongodb.db.whatsapp_automation.count_documents({})
             
-            # Calculate speed (based on last 10 minutes)
-            ten_mins_ago = datetime.utcnow() - multiprocessing.timedelta(minutes=10)
-            recent_count = mongodb.db.whatsapp_automation.count_documents({
-                "timestamp": {"$gte": ten_mins_ago}
-            })
-            
-            # Speed logic
-            # If we have recent data, calculate rate
-            contacts_per_minute = 0
-            if recent_count > 0:
-                # Get time range of recent docs
-                newest = list(mongodb.db.whatsapp_automation.find().sort("timestamp", -1).limit(1))
-                oldest_recent = list(mongodb.db.whatsapp_automation.find({"timestamp": {"$gte": ten_mins_ago}}).sort("timestamp", 1).limit(1))
-                
-                if newest and oldest_recent:
-                    time_diff = (newest[0]["timestamp"] - oldest_recent[0]["timestamp"]).total_seconds()
-                    if time_diff > 0:
-                        contacts_per_minute = (recent_count / time_diff) * 60
-            
-            # Calculate ETA
+            # Calculate ETA based on configured delays
             remaining = max(0, total_rows - processed_count)
-            eta_seconds = 0
-            if contacts_per_minute > 0:
-                eta_seconds = (remaining / contacts_per_minute) * 60
+            
+            # Avg time per contact = avg(min, max) + (msg_per_phone - 1) * delay_between
+            # Assuming 3 messages per phone as per sender.py logic
+            delay_min = metadata.get("delay_min", 60)
+            delay_max = metadata.get("delay_max", 180)
+            delay_between = metadata.get("delay_between", 10)
+            
+            avg_delay_per_contact = ((delay_min + delay_max) / 2) + (2 * delay_between)
+            eta_seconds = remaining * avg_delay_per_contact
             
             return {
-                "contacts_per_minute": round(contacts_per_minute, 1),
+                "progress": f"{processed_count}/{total_rows}",
                 "remaining": remaining,
                 "total": total_rows,
                 "processed": processed_count,
