@@ -7,17 +7,17 @@ import random
 import os
 import atexit
 import signal
-import asyncio
 from loguru import logger
 
 from ..config import (
     STATE_FILE, EXCEL_FILE, MESSAGE_TEMPLATE_1, MESSAGE_TEMPLATE_2, MESSAGE_TEMPLATE_3,
     PHONE_COLUMNS, DELAY_MIN, DELAY_MAX, DELAY_BETWEEN_MESSAGES, USER_AGENT, CONDOMINIO
 )
-from ..utils import clean_phone_number, format_name
-from ...repositories.message_repository import MessageRepository
+from ..utils import clean_phone_number, format_name, is_mobile_phone
+from ...repositories.mongo_repository import mongo_repo
 from ...utils.structured_logger import StructuredLogger
 from ...utils.metrics import SessionMetrics
+
 
 # Global variables for cleanup
 _context = None
@@ -77,6 +77,15 @@ def send_messages():
         - Column 'Nome': Contact name (will be formatted)
         - Columns 'Tel1', 'Tel2', etc: Phone numbers
     """
+    # CONNECT TO MONGODB (simple PyMongo - no Prisma)
+    logger.info("🔌 Connecting to MongoDB...")
+    db_connected = mongo_repo.connect()
+    
+    if db_connected:
+        logger.success("✅ MongoDB connected!")
+    else:
+        logger.warning("⚠️ Continuing without database...")
+    
     # Initialize metrics tracking
     metrics = SessionMetrics()
     
@@ -84,29 +93,18 @@ def send_messages():
     try:
         df = pd.read_excel(EXCEL_FILE)
         logger.info(f"📊 File '{EXCEL_FILE}' loaded successfully. {len(df)} contacts found.")
+        
+        # Initialize session in MongoDB for ETA calculations
+        if db_connected:
+            mongo_repo.init_session(len(df))
+            
     except FileNotFoundError:
         logger.error(f"Error: File '{EXCEL_FILE}' not found.")
         return
 
-    # Initialize message repository and connect ONCE at the start
-    message_repo = MessageRepository()
-    try:
-        # Connect Prisma synchronously before starting
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_closed():
-                raise RuntimeError("Event loop is closed")
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        loop.run_until_complete(message_repo.ensure_connected())
-        logger.success("✅ Database connection established!")
-    except Exception as db_error:
-        logger.error(f"❌ Failed to connect to database: {db_error}")
-        logger.warning("⚠️ Continuing without database logging...")
-
     with sync_playwright() as p:
+
+
         global _browser, _context
         
         # Ensure data directory exists
@@ -191,7 +189,12 @@ def send_messages():
                     metrics.record_invalid_phone()
                     continue  # Skip invalid phones silently
 
-                logger.success(f"✅ Valid phone: {phone}")
+                # Validate: only mobile phones (skip landlines)
+                if not is_mobile_phone(phone):
+                    logger.warning(f"   ⏭️ Skipping landline: {phone} (not mobile)")
+                    continue  # Skip landlines
+
+                logger.success(f"✅ Valid mobile: {phone}")
                 metrics.record_phone_processed()
                 messages_sent_for_phone = 0  # Reset counter for each phone
 
@@ -264,15 +267,7 @@ def send_messages():
                                 status="invalid",
                                 error=error_reason
                             )
-                            # Mark as INVALID in database when error is detected
-                            try:
-                                status = f"INVALID_{error_reason.replace(' ', '_')}"
-                                message_repo.add_message_sync(name=raw_name, phone=phone, status=status)
-                                logger.debug(f"      Salvo como: {status}")
-                                StructuredLogger.log_database_operation("save", "success", record_count=1)
-                            except Exception as db_e:
-                                logger.debug(f"      Erro ao salvar status: {db_e}")
-                                StructuredLogger.log_database_operation("save", "failed", error=str(db_e))
+                            # Invalid phone - will be counted in contact save
                             break  # Exit message loop (skip to next phone)
                         
                         # VALIDATION 2: Try to find message field
@@ -316,15 +311,7 @@ def send_messages():
                                 error="Message field not found"
                             )
                             
-                            # Save as TIMEOUT/NOT_FOUND
-                            try:
-                                message_repo.add_message_sync(name=raw_name, phone=phone, status="NOT_FOUND")
-                                logger.debug(f"      Salvo como: NOT_FOUND")
-                                StructuredLogger.log_database_operation("save", "success", record_count=1)
-                            except Exception as db_e:
-                                logger.debug(f"      Erro ao salvar status: {db_e}")
-                                StructuredLogger.log_database_operation("save", "failed", error=str(db_e))
-                            
+                            # Not found - will be counted in contact save
                             continue  # Skip to next phone
                         
                         if input_box:
@@ -463,18 +450,52 @@ def send_messages():
                         if messages_sent_for_phone > 0:
                             phones_sent.append(phone)  # Still add to list even if error
                 
-                # --- SAVE TO DATABASE AFTER ALL PHONES FOR THIS CONTACT ---
-                if phones_sent:
-                    logger.debug(f"DEBUG: Saving contact to DB... Name: {raw_name}, Phones: {phones_sent}")
+                # --- SAVE CONTACT TO MONGODB ---
+                # Calculate funnel metrics
+                phones_total_raw = 0
+                phones_valid_count = 0
+                valid_mobile_phones = []
+                
+                for col in PHONE_COLUMNS:
+                    raw = row.get(col)
+                    if raw and not pd.isna(raw) and str(raw).strip():
+                        phones_total_raw += 1
+                        cleaned = clean_phone_number(raw)
+                        if cleaned:
+                            phones_valid_count += 1
+                            if is_mobile_phone(cleaned):
+                                valid_mobile_phones.append(cleaned)
+                
+                phones_found = len(valid_mobile_phones)
+                phones_with_msg = len(phones_sent)
+                
+                # Determine status
+                if phones_found == 0:
+                    contact_status = "NO_MOBILE"  # No valid mobile phones
+                elif phones_with_msg == 0:
+                    contact_status = "ERROR"
+                elif phones_with_msg == phones_found:
+                    contact_status = "SUCCESS"
+                else:
+                    contact_status = "PARTIAL"
+                
+                if db_connected:
                     try:
-                        contact_status = "SENT" if len(phones_sent) == len([p for p in [row.get(col) for col in PHONE_COLUMNS] if p and isinstance(p, (int, float, str))]) else "PARTIAL"
-                        logger.debug(f"DEBUG: Calling add_message_batch_sync with name='{raw_name}', phones={phones_sent}, status='{contact_status}'")
-                        result = message_repo.add_message_batch_sync(name=raw_name, phones=phones_sent, status=contact_status)
-                        logger.info(f"   💾 Saved to DB: {raw_name} - {len(phones_sent)} phones - {contact_status}")
-                        logger.debug(f"DEBUG: Save successful! ID: {result.id if result and hasattr(result, 'id') else 'None'}")
+                        mongo_repo.save_contact(
+                            name=raw_name,
+                            status=contact_status,
+                            phones_found=phones_found,
+                            phones_sent=phones_with_msg,
+                            phones=phones_sent,
+                            condominio=CONDOMINIO,
+                            phones_total=phones_total_raw,
+                            phones_valid=phones_valid_count
+                        )
+                        logger.info(f"   💾 MongoDB: {raw_name} | {contact_status} | {phones_with_msg}/{phones_found} phones")
                     except Exception as e:
-                        logger.error(f"Error saving status to database: {e}", exc_info=True)
-                        logger.debug(f"DEBUG: ERROR SAVING TO DB: {type(e).__name__}: {e}")
+                        logger.debug(f"   ⚠️ Could not save to MongoDB: {e}")
+
+
 
         logger.success(f"🎉 Processing complete. Total sent: {total_sent}")
         
@@ -527,17 +548,7 @@ def send_messages():
             # Close context and browser
             _save_session_and_cleanup()
             
-            # Close database connection
-            try:
-                logger.info("💾 Closing database connection...")
-                loop = asyncio.get_event_loop()
-                if loop.is_closed():
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                loop.run_until_complete(message_repo.close_connection())
-                logger.success("✅ Database connection closed!")
-            except Exception as db_close_error:
-                logger.warning(f"⚠️ Error closing database: {db_close_error}")
+            # MongoDB connection closes automatically
 
 
 if __name__ == "__main__":

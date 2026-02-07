@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard de Automação WhatsApp</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📊 Dashboard de Automação WhatsApp</h1>
+            <div class="header-stats">
+                <div class="stat-card">
+                    <span class="stat-label">Status</span>
+                    <span class="stat-value" id="status">Idle</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label">Última Atualização</span>
+                    <span class="stat-value" id="last-update">-</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Current Session -->
+        <section class="section">
+            <h2>Sessão Atual</h2>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-icon">📱</div>
+                    <div class="metric-content">
+                        <div class="metric-value" id="current-contacts">0</div>
+                        <div class="metric-label">Contatos Processados</div>
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-icon">✅</div>
+                    <div class="metric-content">
+                        <div class="metric-value" id="current-sent">0</div>
+                        <div class="metric-label">Envios Realizados</div>
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-icon">❌</div>
+                    <div class="metric-content">
+                        <div class="metric-value" id="current-failed">0</div>
+                        <div class="metric-label">Erros</div>
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-icon">📈</div>
+                    <div class="metric-content">
+                        <div class="metric-value" id="current-success-rate">0%</div>
+                        <div class="metric-label">Taxa de Sucesso</div>
+                    </div>
+                </div>
+                <!-- New Real-Time Metrics -->
+                <div class="metric-card">
+                    <div class="metric-icon">⚡</div>
+                    <div class="metric-content">
+                        <div class="metric-value" id="current-speed">0.0</div>
+                        <div class="metric-label">Msg/Min</div>
+                    </div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-icon">⏳</div>
+                    <div class="metric-content">
+                        <div class="metric-value" id="current-eta">-</div>
+                        <div class="metric-label">Tempo Restante</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Charts -->
+        <section class="section">
+            <h2>Estatísticas</h2>
+            <div class="charts-grid">
+                <div class="chart-container">
+                    <h3>Envios Diários</h3>
+                    <canvas id="successRateChart"></canvas>
+                </div>
+                <div class="chart-container">
+                    <h3>Distribuição de Status</h3>
+                    <canvas id="errorDistChart"></canvas>
+                </div>
+            </div>
+            
+            <!-- Funnel Chart (Full Width) -->
+            <div class="chart-container" style="margin-top: 2rem;">
+                <h3>Funil de Conversão</h3>
+                <canvas id="funnelChart"></canvas>
+            </div>
+        </section>
+
+        <!-- Contact History -->
+        <section class="section">
+            <h2>📋 Histórico de Contatos</h2>
+            <div class="table-container">
+                <table id="sessions-table">
+                    <thead>
+                        <tr>
+                            <th>Nome</th>
+                            <th>Horário</th>
+                            <th>Status</th>
+                            <th>Celulares</th>
+                            <th>Enviados</th>
+                            <th>Taxa (%)</th>
+                            <th>Obs</th>
+                        </tr>
+                    </thead>
+                    <tbody id="sessions-tbody">
+                        <tr>
+                            <td colspan="7" class="no-data">No contacts yet</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Condominium Comparison -->
+        <section class="section">
+            <h2>🏢 Engajamento por Condomínio</h2>
+            <div class="table-container">
+                <table id="condominio-table">
+                    <thead>
+                        <tr>
+                            <th>Condomínio</th>
+                            <th>Contatos</th>
+                            <th>Celulares</th>
+                            <th>Enviados</th>
+                            <th>Taxa (%)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="condominio-tbody">
+                        <tr>
+                            <td colspan="5" class="no-data">No data yet</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Recent Logs -->
+        <section class="section">
+            <h2>Logs Recentes</h2>
+            <div class="logs-container" id="logs-container">
+                <div class="no-data">Nenhum log disponível</div>
+            </div>
+        </section>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

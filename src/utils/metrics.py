@@ -1,8 +1,9 @@
 """Session metrics tracking for WhatsApp automation."""
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Dict, Optional
 from collections import defaultdict
+import uuid
 
 
 @dataclass
@@ -13,6 +14,9 @@ class SessionMetrics:
     Tracks all relevant metrics during a WhatsApp message sending session,
     including successes, failures, and error types.
     """
+    
+    # Session identification
+    session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     
     # Session timing
     start_time: datetime = field(default_factory=datetime.utcnow)
@@ -29,6 +33,13 @@ class SessionMetrics:
     # Error counts
     invalid_phones: int = 0
     not_found_phones: int = 0
+    
+    # Retry tracking
+    total_retries: int = 0
+    retry_successes: int = 0
+    
+    # Rate limiting
+    rate_limit_hits: int = 0
     
     # Error tracking by type
     errors_by_type: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
@@ -63,6 +74,16 @@ class SessionMetrics:
         """Record a phone number being processed."""
         self.total_phones_processed += 1
     
+    def record_retry(self, success: bool = False):
+        """Record a retry attempt."""
+        self.total_retries += 1
+        if success:
+            self.retry_successes += 1
+    
+    def record_rate_limit(self):
+        """Record a rate limit hit."""
+        self.rate_limit_hits += 1
+    
     def finalize(self):
         """Mark session as complete and record end time."""
         self.end_time = datetime.utcnow()
@@ -95,6 +116,9 @@ class SessionMetrics:
             Dictionary with all metrics and calculated statistics
         """
         return {
+            "session_id": self.session_id,
+            "start_time": self.start_time.isoformat(),
+            "end_time": self.end_time.isoformat() if self.end_time else None,
             "duration_seconds": round(self.get_duration_seconds(), 2),
             "duration_minutes": round(self.get_duration_seconds() / 60, 2),
             "total_contacts": self.total_contacts,
@@ -103,6 +127,9 @@ class SessionMetrics:
             "messages_failed": self.messages_failed,
             "invalid_phones": self.invalid_phones,
             "not_found_phones": self.not_found_phones,
+            "total_retries": self.total_retries,
+            "retry_successes": self.retry_successes,
+            "rate_limit_hits": self.rate_limit_hits,
             "success_rate_percent": round(self.get_success_rate(), 2),
             "messages_per_minute": round(self.get_messages_per_minute(), 2),
             "errors_by_type": dict(self.errors_by_type),
@@ -120,3 +147,7 @@ class SessionMetrics:
             f"success_rate={summary['success_rate_percent']:.1f}%"
             f")"
         )
+    
+    def to_dict(self) -> dict:
+        """Convert metrics to dictionary for persistence."""
+        return self.get_summary()

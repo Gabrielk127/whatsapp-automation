@@ -196,3 +196,87 @@ class StructuredLogger:
             logger.debug(f"Database operation | {json.dumps(context, ensure_ascii=False)}")
         else:
             logger.error(f"Database operation failed | {json.dumps(context, ensure_ascii=False)}")
+    
+    @staticmethod
+    def log_phone_validation(
+        phone: str,
+        is_valid: bool,
+        reason: Optional[str] = None
+    ):
+        """
+        Log phone number validation.
+        
+        Args:
+            phone: Phone number being validated
+            is_valid: Whether phone is valid
+            reason: Optional reason for validation result
+        """
+        context = {
+            "event": "phone_validation",
+            "phone": phone,
+            "is_valid": is_valid,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+        
+        if reason:
+            context["reason"] = reason
+        
+        if is_valid:
+            logger.debug(f"Phone validated | {json.dumps(context, ensure_ascii=False)}")
+        else:
+            logger.warning(f"Phone invalid | {json.dumps(context, ensure_ascii=False)}")
+    
+    @staticmethod
+    def log_retry_attempt(
+        operation: str,
+        attempt: int,
+        max_attempts: int,
+        error: str,
+        retry_delay: float
+    ):
+        """
+        Log retry attempt.
+        
+        Args:
+            operation: Operation being retried
+            attempt: Current attempt number
+            max_attempts: Maximum attempts allowed
+            error: Error that triggered retry
+            retry_delay: Delay before retry in seconds
+        """
+        context = {
+            "event": "retry_attempt",
+            "operation": operation,
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "error": error,
+            "retry_delay": retry_delay,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+        
+        logger.warning(f"Retry attempt | {json.dumps(context, ensure_ascii=False)}")
+    
+    @staticmethod
+    def log_rate_limit(
+        retry_after: Optional[int] = None,
+        context_data: Optional[Dict[str, Any]] = None
+    ):
+        """
+        Log rate limit event.
+        
+        Args:
+            retry_after: Seconds to wait before retry
+            context_data: Optional additional context
+        """
+        context = {
+            "event": "rate_limit",
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+        
+        if retry_after:
+            context["retry_after"] = retry_after
+        
+        if context_data:
+            context.update(context_data)
+        
+        logger.warning(f"Rate limit hit | {json.dumps(context, ensure_ascii=False)}")

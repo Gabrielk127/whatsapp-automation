@@ -1,0 +1,327 @@
+:root {
+    --primary: #10b981;
+    --primary-dark: #059669;
+    --secondary: #3b82f6;
+    --danger: #ef4444;
+    --warning: #f59e0b;
+    --dark: #1f2937;
+    --dark-light: #374151;
+    --gray: #6b7280;
+    --gray-light: #9ca3af;
+    --bg: #111827;
+    --bg-card: #1f2937;
+    --text: #f9fafb;
+    --text-secondary: #d1d5db;
+    --border: #374151;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+}
+
+.container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 2rem;
+}
+
+header {
+    margin-bottom: 3rem;
+}
+
+header h1 {
+    font-size: 2.5rem;
+    margin-bottom: 1rem;
+    background: linear-gradient(135deg, var(--primary), var(--secondary));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.header-stats {
+    display: flex;
+    gap: 1rem;
+}
+
+.stat-card {
+    background: var(--bg-card);
+    padding: 1rem 1.5rem;
+    border-radius: 0.75rem;
+    border: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+}
+
+.stat-label {
+    font-size: 0.875rem;
+    color: var(--gray-light);
+    margin-bottom: 0.25rem;
+}
+
+.stat-value {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--primary);
+}
+
+.section {
+    margin-bottom: 3rem;
+}
+
+.section h2 {
+    font-size: 1.75rem;
+    margin-bottom: 1.5rem;
+    color: var(--text);
+}
+
+.metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+}
+
+.metric-card {
+    background: var(--bg-card);
+    padding: 1.5rem;
+    border-radius: 1rem;
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    transition: all 0.3s ease;
+}
+
+.metric-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 10px 30px rgba(16, 185, 129, 0.2);
+    border-color: var(--primary);
+}
+
+.metric-icon {
+    font-size: 2.5rem;
+}
+
+.metric-content {
+    flex: 1;
+}
+
+.metric-value {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 0.25rem;
+}
+
+.metric-label {
+    font-size: 0.875rem;
+    color: var(--gray-light);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.charts-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    gap: 2rem;
+}
+
+.chart-container {
+    background: var(--bg-card);
+    padding: 1.5rem;
+    border-radius: 1rem;
+    border: 1px solid var(--border);
+    height: 520px; /* Increased height further */
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden; /* Prevent charts from spilling out */
+}
+
+.chart-container canvas {
+    flex: 1;
+    width: 100% !important;
+    min-height: 0; /* CRITICAL: Allows canvas to shrink in flex container */
+}
+
+.chart-container h3 {
+    font-size: 1.25rem;
+    margin-bottom: 1rem;
+    color: var(--text-secondary);
+}
+
+.table-container {
+    background: var(--bg-card);
+    border-radius: 1rem;
+    border: 1px solid var(--border);
+    overflow: hidden; /* Keeps formatting */
+    overflow-y: auto; /* Adds vertical scroll */
+    max-height: 400px; /* Limit height */
+}
+
+.logs-container {
+    background: var(--bg-card);
+    border-radius: 1rem;
+    border: 1px solid var(--border);
+    padding: 1.5rem;
+    max-height: 300px; /* Reduced to be more compact */
+    overflow-y: auto;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+thead {
+    background: var(--dark-light);
+}
+
+th {
+    padding: 1rem;
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+td {
+    padding: 1rem;
+    border-top: 1px solid var(--border);
+    color: var(--text);
+}
+
+tbody tr {
+    transition: background 0.2s ease;
+}
+
+tbody tr:hover {
+    background: var(--dark-light);
+}
+
+.no-data {
+    text-align: center;
+    padding: 3rem;
+    color: var(--gray);
+    font-style: italic;
+}
+
+.logs-container {
+    background: var(--bg-card);
+    border-radius: 1rem;
+    border: 1px solid var(--border);
+    padding: 1.5rem;
+    max-height: 500px;
+    overflow-y: auto;
+}
+
+.log-entry {
+    padding: 0.75rem;
+    margin-bottom: 0.5rem;
+    border-radius: 0.5rem;
+    border-left: 3px solid var(--gray);
+    background: var(--dark);
+    font-family: 'Courier New', monospace;
+    font-size: 0.875rem;
+}
+
+.log-entry.success {
+    border-left-color: var(--primary);
+}
+
+.log-entry.error {
+    border-left-color: var(--danger);
+}
+
+.log-entry.warning {
+    border-left-color: var(--warning);
+}
+
+.log-timestamp {
+    color: var(--gray-light);
+    margin-right: 0.5rem;
+}
+
+.log-level {
+    display: inline-block;
+    padding: 0.125rem 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-right: 0.5rem;
+}
+
+.log-level.success {
+    background: var(--primary);
+    color: white;
+}
+
+.log-level.error {
+    background: var(--danger);
+    color: white;
+}
+
+.log-level.warning {
+    background: var(--warning);
+    color: white;
+}
+
+.log-message {
+    color: var(--text-secondary);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--dark);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--gray);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--gray-light);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .container {
+        padding: 1rem;
+    }
+
+    header h1 {
+        font-size: 1.75rem;
+    }
+
+    .metrics-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .charts-grid {
+        grid-template-columns: 1fr;
+    }
+
+    table {
+        font-size: 0.875rem;
+    }
+
+    th, td {
+        padding: 0.75rem 0.5rem;
+    }
+}

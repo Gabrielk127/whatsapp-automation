@@ -6,7 +6,7 @@ from loguru import logger
 
 from src.whatsapp import save_session, send_messages
 from src.config.loguru_mongo_handler import setup_loguru
-from src.repositories.log_repository import LogRepository
+
 
 
 class AutomationMode(Enum):
@@ -36,8 +36,7 @@ class ApplicationService:
             logger.success("🚀 Starting WhatsApp Automation...")
             
             # Setup Loguru for WhatsApp
-            log_repository = LogRepository() if self.include_mongodb else None
-            setup_loguru(include_mongodb=self.include_mongodb, log_repository=log_repository)
+            setup_loguru(include_mongodb=self.include_mongodb)
             logger.info(f"🤖 Automation mode: {self.mode.value.upper()}")
             
             # Execute automation according to mode

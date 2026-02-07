@@ -1,66 +1,16 @@
-"""Loguru handler for MongoDB logging using multiprocessing."""
+"""Loguru handler for MongoDB logging using the new PyMongo setup."""
 
-import atexit
-import multiprocessing
 import sys
-
 from loguru import logger
-
-from prisma import Json
-from src.repositories.log_repository import LogRepository
+from src.repositories.mongo_repository import mongo_repo
 
 
-class MongoDBLoguruHandler:
-    """Loguru handler for writing logs to MongoDB using multiprocessing."""
-
-    def __init__(self, log_repository: LogRepository):
-        self.log_repository = log_repository
-        self.queue = multiprocessing.Queue()
-        self.worker = multiprocessing.Process(
-            target=self._worker_func, args=(self.queue,)
-        )
-        self.worker.start()
-        atexit.register(self._cleanup)
-
-    def _cleanup(self):
-        self.queue.put(None)
-        self.worker.join(timeout=5)
-
-    def _worker_func(self, queue):
-        repo = LogRepository()
-        while True:
-            log_data = queue.get()
-            if log_data is None:
-                break
-            try:
-                repo.add_log_sync(log_data)  # type: ignore
-            except Exception as e:
-                print(f"Error writing log to MongoDB: {type(e).__name__}: {e}")
-
-    def write(self, message):
-        """Write a log message to the MongoDB repository."""
-        record = message.record
-        context_data = {
-            "location": record["file"].name + ":" + str(record["line"]),
-            "function": record["function"],
-        }
-
-        log_data = {
-            "level": record["level"].name,
-            "message": record["message"],
-            "time": record["time"],
-            "context": Json(context_data),
-        }
-        self.queue.put(log_data)
-
-
-def setup_loguru(include_mongodb: bool = False, log_repository: LogRepository | None = None):
+def setup_loguru(include_mongodb: bool = False):
     """
     Setup Loguru logger.
     
     Args:
-        include_mongodb: If True, adds MongoDB handler
-        log_repository: LogRepository instance for MongoDB
+        include_mongodb: If True, adds MongoDB handler (connects to MongoDB)
     """
     logger.remove()
     
@@ -74,9 +24,23 @@ def setup_loguru(include_mongodb: bool = False, log_repository: LogRepository | 
     logger.add(sys.stdout, format=console_format, level="DEBUG", colorize=True)
     
     # MongoDB Handler (optional)
-    if include_mongodb and log_repository:
+    if include_mongodb:
         try:
-            handler = MongoDBLoguruHandler(log_repository)
-            logger.add(handler.write, level="INFO")
+            if mongo_repo.connect():
+                # Add handler that writes logs to MongoDB
+                def mongo_sink(message):
+                    record = message.record
+                    context = {
+                        "location": f"{record['file'].name}:{record['line']}",
+                        "function": record["function"],
+                    }
+                    mongo_repo.save_log(
+                        level=record["level"].name,
+                        message=record["message"],
+                        context=context
+                    )
+                
+                logger.add(mongo_sink, level="INFO")
+                logger.info("📊 MongoDB logging enabled")
         except Exception as e:
             logger.warning(f"Failed to configure MongoDB logging: {e}")
