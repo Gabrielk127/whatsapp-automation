@@ -11,7 +11,8 @@ from loguru import logger
 
 from ..config import (
     STATE_FILE, EXCEL_FILE, MESSAGE_TEMPLATE_1, MESSAGE_TEMPLATE_2, MESSAGE_TEMPLATE_3,
-    PHONE_COLUMNS, DELAY_MIN, DELAY_MAX, DELAY_BETWEEN_MESSAGES, USER_AGENT, CONDOMINIO
+    PHONE_COLUMNS, DELAY_MIN, DELAY_MAX, DELAY_BETWEEN_MESSAGES, USER_AGENT, CONDOMINIO,
+    MAX_CONTACTS_PER_SESSION, BASE_NUMBER
 )
 from ..utils import clean_phone_number, format_name, is_mobile_phone
 from ...repositories.mongo_repository import mongo_repo
@@ -106,7 +107,16 @@ def send_messages():
     except FileNotFoundError:
         logger.error(f"Error: File '{EXCEL_FILE}' not found.")
         return
-
+        
+    # Load history for deduplication
+    logger.info("📚 Loading history from database...")
+    if db_connected:
+        already_sent_phones = mongo_repo.get_all_successful_phones()
+        logger.info(f"📚 {len(already_sent_phones)} unique numbers loaded from history.")
+    else:
+        already_sent_phones = set()
+        logger.warning("⚠️ No database connection - Duplicate check disabled.")
+    print(already_sent_phones)
     with sync_playwright() as p:
 
 
@@ -165,8 +175,14 @@ def send_messages():
             return
 
         total_sent = 0
+        logger.info(f"ℹ️  Contact limit per session: {MAX_CONTACTS_PER_SESSION}")
 
         for count, (index, row) in enumerate(df.iterrows(), 1):
+            if count > MAX_CONTACTS_PER_SESSION:
+                logger.warning(f"🛑 Limit of {MAX_CONTACTS_PER_SESSION} contacts reached for this session.")
+                logger.info("   Finishing execution safely...")
+                break
+
             raw_name = row['Nome'] if not pd.isna(row['Nome']) else "Cliente"
             # Format name: lowercase with first letter capitalized, first name only
             formatted_name = format_name(raw_name)
@@ -205,6 +221,11 @@ def send_messages():
                     logger.warning(f"   ⏭️ Skipping landline: {phone} (not mobile)")
                     continue  # Skip landlines
 
+                # DUPLICATE CHECK: Skip if already sent
+                if phone in already_sent_phones:
+                    logger.warning(f"   ⏩ Skipping duplicate: {phone} (already sent)")
+                    continue
+
                 logger.success(f"✅ Valid mobile: {phone}")
                 metrics.record_phone_processed()
                 messages_sent_for_phone = 0  # Reset counter for each phone
@@ -242,29 +263,79 @@ def send_messages():
                         error_detected = False
                         error_reason = ""
                         
-                        # Check for "number is not on WhatsApp" error
-                        error_patterns = [
-                            ('text=não está no WhatsApp', 'Número não está no WhatsApp'),
-                            ('text=não tem o WhatsApp', 'Número não tem WhatsApp'),
-                            ('text=O número de telefone compartilhado por url é inválido', 'Número inválido'),
-                            ('text=número invalido', 'Número inválido'),
-                            ('[role="alert"]', 'Alerta geral'),
-                        ]
-                        
+                        # Wait a moment for potential popups
+                        time.sleep(1.5)
+
+                        # SPECIAL HANDLING: "Number not on WhatsApp" Popup (with OK button)
+                        # Detects the popup shown in user's screenshot
                         try:
-                            for selector, reason in error_patterns:
-                                error_elem = page.query_selector(selector)
-                                if error_elem:
-                                    error_text = error_elem.text_content() if hasattr(error_elem, 'text_content') else str(error_elem)
-                                    logger.warning(f"   ⚠️ WhatsApp error detected para {phone}")
-                                    logger.info(f"      Motivo: {reason}")
-                                    if error_text and error_text.strip():
-                                        logger.debug(f"      Mensagem: {error_text}")
+                            # 1. Check specifically for the DIALOG element which is the most reliable indicator
+                            dialog = page.query_selector('div[role="dialog"]')
+                            
+                            if dialog and dialog.is_visible():
+                                dialog_text = dialog.text_content()
+                                logger.debug(f"   🔎 Dialog detected with text: {dialog_text[:50]}...")
+                                
+                                # Check for keywords in the dialog text
+                                if "não está no WhatsApp" in dialog_text or \
+                                   "não tem o WhatsApp" in dialog_text or \
+                                   "inválido" in dialog_text or \
+                                   "invalid" in dialog_text:
+                                    
                                     error_detected = True
-                                    error_reason = reason
-                                    break
-                        except Exception as e:
-                            logger.debug(f"   🔍 Erro ao verificar padrões de erro: {e}")
+                                    error_reason = "Número não está no WhatsApp (Popup)"
+                                    logger.warning(f"   ⚠️ Popup detected: {error_reason}")
+                                    
+                                    # Try to click OK to close it
+                                    ok_btn = dialog.query_selector('button:has-text("OK")')
+                                    if not ok_btn:
+                                        ok_btn = dialog.query_selector('[data-testid="popup-controls-ok"]')
+                                    if not ok_btn:
+                                        ok_btn = page.query_selector('div[role="button"]:has-text("OK")')
+                                        
+                                    if ok_btn:
+                                        logger.info(f"      🔘 Clicking OK to dismiss...")
+                                        ok_btn.click()
+                                        time.sleep(1)
+                                    else:
+                                        # Fallback click on the dialog itself + Escape?
+                                        logger.info(f"      🔘 Could not find OK button, trying Escape...")
+                                        page.keyboard.press("Escape")
+                                
+                            # 2. As fallback, check page text if dialog check failed/missed
+                            elif page.is_visible("text=não está no WhatsApp") or \
+                                 page.is_visible("text=não tem o WhatsApp"):
+                                error_detected = True
+                                error_reason = "Número não está no WhatsApp (Text Check)"
+                                logger.warning(f"   ⚠️ Text warning detected: {error_reason}")
+                                page.keyboard.press("Escape")
+                                
+                        except Exception as e_popup:
+                             logger.debug(f"   Error checking popup: {e_popup}")
+
+                        # Fallback to legacy/strict pattern check if not yet detected
+                        if not error_detected:
+                            error_patterns = [
+                                ('text=não está no WhatsApp', 'Número não está no WhatsApp'),
+                                ('text=não tem o WhatsApp', 'Número não tem WhatsApp'),
+                                ('text=O número de telefone compartilhado por url é inválido', 'Número inválido'),
+                                ('text=número invalido', 'Número inválido'),
+                                ('[role="alert"]', 'Alerta geral'),
+                            ]
+                            
+                            try:
+                                for selector, reason in error_patterns:
+                                    error_elem = page.query_selector(selector)
+                                    if error_elem and error_elem.is_visible():
+                                        error_text = error_elem.text_content() if hasattr(error_elem, 'text_content') else str(error_elem)
+                                        logger.warning(f"   ⚠️ WhatsApp error detected for {phone}")
+                                        logger.info(f"      Reason: {reason}")
+                                        error_detected = True
+                                        error_reason = reason
+                                        break
+                            except Exception as e:
+                                logger.debug(f"   🔍 Error checking patterns: {e}")
+
                         
                         # If error detected, skip this number and save with status
                         if error_detected:
@@ -438,7 +509,27 @@ def send_messages():
                         else:  # If last message, do long delay before next contact
                             wait_time = random.randint(DELAY_MIN, DELAY_MAX)
                             logger.info(f"   💤 Waiting {wait_time}s before next phone...")
-                            time.sleep(wait_time)
+                            
+                            # --- RETURN TO BASE NUMBER (COOL DOWN) ---
+                            # Avoids staying on the contact's chat while waiting
+                            try:
+                                logger.info(f"      🏠 Returning to base number ({BASE_NUMBER}) for safety...")
+                                base_link = f"https://web.whatsapp.com/send?phone={BASE_NUMBER}"
+                                page.goto(base_link)
+                                
+                                # Wait a bit to ensure it loaded the base chat
+                                time.sleep(5)
+                                
+                                # Now wait the rest of the random delay
+                                remaining_wait = max(0, wait_time - 5)
+                                if remaining_wait > 0:
+                                    logger.info(f"      ⏳ Holding at base number for {remaining_wait}s...")
+                                    time.sleep(remaining_wait)
+                                    
+                            except Exception as e_base:
+                                logger.error(f"      ❌ Error returning to base number: {e_base}")
+                                # If failed, just wait the normal time
+                                time.sleep(wait_time)
                         
                         # Track successful messages for this phone
                         pass # Moved append outside the message loop

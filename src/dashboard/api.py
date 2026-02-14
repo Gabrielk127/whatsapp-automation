@@ -63,6 +63,17 @@ async def get_app_js():
     return {"error": "JS not found"}
 
 
+@app.get("/favicon.ico")
+async def get_favicon():
+    """Serve favicon."""
+    favicon_path = Path(__file__).parent.parent / "assets" / "favicon.ico"
+    print(f"DEBUG: Looking for favicon at: {favicon_path}")
+    print(f"DEBUG: File exists: {favicon_path.exists()}")
+    if favicon_path.exists():
+        return FileResponse(favicon_path, media_type="image/x-icon")
+    return {"error": f"Favicon not found at {favicon_path}"}
+
+
 @app.get("/api/metrics/current")
 async def get_current_metrics() -> Dict[str, Any]:
     """

@@ -104,6 +104,38 @@ class MongoRepository:
             print(f"❌ Error saving contact: {e}")
             return False
     
+            print(f"❌ Error saving contact: {e}")
+            return False
+            
+    def get_all_successful_phones(self) -> set:
+        """
+        Get a SET of all unique phone numbers that have been successfully messaged.
+        Used for in-memory deduplication.
+        """
+        if not self.is_connected():
+            return set()
+        
+        try:
+            # Query for contacts where at least one phone was sent
+            # Only fetch the 'phones' field to reduce bandwidth
+            cursor = mongodb.db.whatsapp_automation.find(
+                {"phones_sent": {"$gt": 0}},
+                {"phones": 1, "_id": 0}
+            )
+            
+            sent_phones = set()
+            for doc in cursor:
+                # Add all phones from the list to the set
+                if "phones" in doc and isinstance(doc["phones"], list):
+                    for phone in doc["phones"]:
+                        if phone:
+                            sent_phones.add(str(phone))
+                            
+            return sent_phones
+        except Exception as e:
+            print(f"❌ Error fetching successful phones: {e}")
+            return set()
+    
     def get_recent_contacts(self, limit: int = 50) -> List[Dict]:
         """Get recent contact automation results."""
         if not self.is_connected():
@@ -336,8 +368,15 @@ class MongoRepository:
             delay_max = metadata.get("delay_max", 180)
             delay_between = metadata.get("delay_between", 10)
             
-            avg_delay_per_contact = ((delay_min + delay_max) / 2) + (2 * delay_between)
-            eta_seconds = remaining * avg_delay_per_contact
+            # NEW FORMULA AS PER USER REQUEST:
+            # (Avg(DelayMin, DelayMax)) + (2 * DelayBetween) = Total per phone
+            # Total per phone * 4 (factor) = Total per contact (approx 340s)
+            
+            avg_long_delay = (delay_min + delay_max) / 2
+            time_between_msgs = 2 * delay_between
+            
+            total_per_phone = avg_long_delay + time_between_msgs
+            eta_seconds = remaining * total_per_phone * 4
             
             return {
                 "progress": f"{processed_count}/{total_rows}",
