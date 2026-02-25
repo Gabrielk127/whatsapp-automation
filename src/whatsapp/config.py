@@ -9,11 +9,11 @@ EXCEL_FILE = 'contatos.xlsx'
 
 # Message templates
 MESSAGE_TEMPLATE_1 = "Olá {name}, tudo bem? Sou a Simone, corretora da imobiliária Armangni."
-MESSAGE_TEMPLATE_2 = "Tenho um cliente interessado na compra do seu imóvel no Jardim {condominio}!"
-MESSAGE_TEMPLATE_3 = "Você tem interesse na venda?"
+MESSAGE_TEMPLATE_2 = "Tenho clientes qualificados buscando imóveis no seu condomínio e gostaria de saber se você tem interesse em vender seu imóvel."
+MESSAGE_TEMPLATE_3 = "Posso te explicar como funciona?"
 
 # Condominium name (fill in here)
-CONDOMINIO = "Pioneiros"
+CONDOMINIO = "Garden Palhano"
 
 # Phone columns in Excel
 PHONE_COLUMNS = ['Telefone 1', 'Telefone 2', 'Telefone 3', 'Telefone 4', 'Telefone 5']
@@ -25,7 +25,7 @@ DELAY_MAX = 180
 DELAY_BETWEEN_MESSAGES = 4
 
 # Limits
-MAX_CONTACTS_PER_SESSION = 50
+MAX_CONTACTS_PER_SESSION = 80
 
 # Base Number (Safe number to return to during delays)
 # Format: 55 + DDD + Number (without spaces or dashes)

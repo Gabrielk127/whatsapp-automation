@@ -175,11 +175,12 @@ def send_messages():
             return
 
         total_sent = 0
-        logger.info(f"ℹ️  Contact limit per session: {MAX_CONTACTS_PER_SESSION}")
+        contacts_successfully_processed = 0
+        logger.info(f"ℹ️  Contact limit per session: {MAX_CONTACTS_PER_SESSION} (Successful Contacts)")
 
         for count, (index, row) in enumerate(df.iterrows(), 1):
-            if count > MAX_CONTACTS_PER_SESSION:
-                logger.warning(f"🛑 Limit of {MAX_CONTACTS_PER_SESSION} contacts reached for this session.")
+            if contacts_successfully_processed >= MAX_CONTACTS_PER_SESSION:
+                logger.warning(f"🛑 Limit of {MAX_CONTACTS_PER_SESSION} SUCCESSFUL contacts reached for this session.")
                 logger.info("   Finishing execution safely...")
                 break
 
@@ -598,6 +599,11 @@ def send_messages():
                     logger.info(f"   💾 MongoDB: {raw_name} | {contact_status} | {phones_with_msg}/{phones_found} phones")
                 except Exception as e:
                     logger.debug(f"   ⚠️ Could not save to MongoDB: {e}")
+            
+            # Increment successful contacts counter if messages were sent
+            if phones_with_msg > 0:
+                contacts_successfully_processed += 1
+                logger.info(f"   ✅ Successful contacts count: {contacts_successfully_processed}/{MAX_CONTACTS_PER_SESSION}")
 
 
 
