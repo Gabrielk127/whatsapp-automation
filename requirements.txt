@@ -1,4 +1,6 @@
 loguru
+pandas
+openpyxl
 prisma
 playwright
 pymongo

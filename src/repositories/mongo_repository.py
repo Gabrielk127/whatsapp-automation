@@ -390,6 +390,35 @@ class MongoRepository:
             print(f"❌ Error getting realtime metrics: {e}")
             return {}
 
+    # ==================== RESUME FUNCTIONALITY ====================
+
+    def get_last_processed_contact_name(self) -> Optional[str]:
+        """
+        Get the name of the last processed contact from the database.
+        
+        Queries the most recent document in 'whatsapp_automation' collection
+        sorted by timestamp descending.
+        
+        Returns:
+            The raw name (as stored from Excel) of the last contact, or None if empty.
+        """
+        if not self.is_connected():
+            return None
+        
+        try:
+            last_contact = mongodb.db.whatsapp_automation.find_one(
+                {},  # No filter - get any document
+                {"name": 1, "_id": 0},  # Only return the name field
+                sort=[("timestamp", -1)]  # Most recent first
+            )
+            
+            if last_contact and "name" in last_contact:
+                return last_contact["name"]
+            return None
+        except Exception as e:
+            print(f"❌ Error fetching last processed contact: {e}")
+            return None
+
 
 # Global instance
 mongo_repo = MongoRepository()

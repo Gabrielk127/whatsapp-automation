@@ -94,19 +94,59 @@ def send_messages():
     try:
         df = pd.read_excel(EXCEL_FILE)
         logger.info(f"📊 File '{EXCEL_FILE}' loaded successfully. {len(df)} contacts found.")
-        
-        # Initialize session in MongoDB for ETA calculations
-        if db_connected:
-            mongo_repo.init_session(
-                total_rows=len(df),
-                delay_min=DELAY_MIN,
-                delay_max=DELAY_MAX,
-                delay_between=DELAY_BETWEEN_MESSAGES
-            )
             
     except FileNotFoundError:
         logger.error(f"Error: File '{EXCEL_FILE}' not found.")
         return
+    
+    # ==================== RESUME LOGIC ====================
+    # Check the last processed contact in MongoDB and skip already processed rows
+    start_index = 0
+    if db_connected:
+        last_name = mongo_repo.get_last_processed_contact_name()
+        if last_name:
+            logger.info(f"🔍 Last processed contact in database: '{last_name}'")
+            
+            # Search for the name in the DataFrame (case-insensitive comparison)
+            matching_indices = df.index[
+                df['Nome'].astype(str).str.strip().str.lower() == str(last_name).strip().lower()
+            ].tolist()
+            
+            if matching_indices:
+                # Use the LAST occurrence in case of duplicate names
+                last_match_idx = matching_indices[-1]
+                start_index = last_match_idx + 1
+                
+                if start_index >= len(df):
+                    logger.success(f"✅ All contacts in the spreadsheet have already been processed!")
+                    logger.info(f"   Total contacts: {len(df)} | Last processed: '{last_name}' (row {last_match_idx + 2})")
+                    return
+                
+                skipped = start_index
+                remaining = len(df) - start_index
+                next_name = df.iloc[start_index]['Nome'] if not pd.isna(df.iloc[start_index]['Nome']) else "N/A"
+                logger.success(f"⏩ Último registro encontrado: '{last_name}' (linha {last_match_idx + 2} do Excel)")
+                logger.success(f"⏩ Começando a partir de: '{next_name}' (linha {start_index + 2} do Excel)")
+                logger.info(f"   ⏭️  Pulando {skipped} contatos já processados")
+                logger.info(f"   📋 Contatos restantes: {remaining}")
+            else:
+                logger.warning(f"⚠️ Last contact '{last_name}' NOT FOUND in spreadsheet. Starting from the beginning.")
+                start_index = 0
+        else:
+            logger.info("📋 No previous history found. Starting from the beginning.")
+    
+    # Slice the DataFrame to only process remaining rows
+    df = df.iloc[start_index:].reset_index(drop=True)
+    logger.info(f"📊 Processing {len(df)} contacts this session.")
+    
+    # Initialize session in MongoDB for ETA calculations (with adjusted count)
+    if db_connected:
+        mongo_repo.init_session(
+            total_rows=len(df),
+            delay_min=DELAY_MIN,
+            delay_max=DELAY_MAX,
+            delay_between=DELAY_BETWEEN_MESSAGES
+        )
         
     # Load history for deduplication
     logger.info("📚 Loading history from database...")
@@ -116,7 +156,6 @@ def send_messages():
     else:
         already_sent_phones = set()
         logger.warning("⚠️ No database connection - Duplicate check disabled.")
-    print(already_sent_phones)
     with sync_playwright() as p:
 
 
