@@ -5,7 +5,7 @@ from enum import Enum
 from loguru import logger
 
 from src.whatsapp import save_session, send_messages
-from src.config.loguru_mongo_handler import setup_loguru
+from src.config.loguru_firebase_handler import setup_loguru
 
 
 
@@ -19,16 +19,16 @@ class AutomationMode(Enum):
 class ApplicationService:
     """Coordinate application workflow."""
 
-    def __init__(self, mode: AutomationMode = AutomationMode.FULL, include_mongodb: bool = False) -> None:
+    def __init__(self, mode: AutomationMode = AutomationMode.FULL, include_firebase: bool = False) -> None:
         """
         Initialize application service.
         
         Args:
             mode: Automation mode (AUTHENTICATE, SEND or FULL)
-            include_mongodb: If True, includes MongoDB logging
+            include_firebase: If True, includes Firebase logging
         """
         self.mode = mode
-        self.include_mongodb = include_mongodb
+        self.include_firebase = include_firebase
 
     def run_application(self) -> None:
         """Run full application flow."""
@@ -36,7 +36,7 @@ class ApplicationService:
             logger.success("🚀 Starting WhatsApp Automation...")
             
             # Setup Loguru for WhatsApp
-            setup_loguru(include_mongodb=self.include_mongodb)
+            setup_loguru(include_firebase=self.include_firebase)
             logger.info(f"🤖 Automation mode: {self.mode.value.upper()}")
             
             # Execute automation according to mode

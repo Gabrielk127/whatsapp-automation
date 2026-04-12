@@ -9,8 +9,8 @@ def main() -> None:
     print("🤖 WhatsApp Automation")
     print("="*60 + "\n")
     
-    # Executa automação com MongoDB logging habilitado
-    application = ApplicationService(mode=AutomationMode.SEND, include_mongodb=True)
+    # Executa automação com Firebase logging habilitado
+    application = ApplicationService(mode=AutomationMode.SEND, include_firebase=True)
     application.run_sync()
 
 

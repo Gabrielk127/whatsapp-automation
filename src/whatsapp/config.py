@@ -8,9 +8,15 @@ STATE_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..',
 EXCEL_FILE = 'contatos.xlsx'
 
 # Message templates
-MESSAGE_TEMPLATE_1 = "Olá {name}, tudo bem? Sou a Simone, corretora da imobiliária Armangni."
-MESSAGE_TEMPLATE_2 = "Tenho clientes qualificados buscando imóveis no seu condomínio e gostaria de saber se você tem interesse em vender seu imóvel."
-MESSAGE_TEMPLATE_3 = "Posso te explicar como funciona?"
+# MESSAGE_TEMPLATE_1 = "Olá {name}, tudo bem? Sou a Simone, corretora da imobiliária Armangni."
+# MESSAGE_TEMPLATE_2 = "Tenho clientes qualificados buscando imóveis no seu condomínio e gostaria de saber se você tem interesse em vender seu imóvel."
+# MESSAGE_TEMPLATE_3 = "Posso te explicar como funciona?"
+
+MESSAGE_TEMPLATE_1 = "Olá {name}, tudo bem? "
+MESSAGE_TEMPLATE_2 = "mensagem 2."
+MESSAGE_TEMPLATE_3 = "mensagem 3."
+
+
 
 # Condominium name (fill in here)
 CONDOMINIO = "Garden Palhano"

@@ -1,704 +1,302 @@
-"""Mass message sending script via WhatsApp."""
-import pandas as pd
-from playwright.sync_api import sync_playwright
-import urllib.parse
+"""Mass message sending script via Evolution API."""
+import os
 import time
 import random
-import os
-import atexit
-import signal
+import pandas as pd
+import requests
+from datetime import datetime
 from loguru import logger
 
 from ..config import (
-    STATE_FILE, EXCEL_FILE, MESSAGE_TEMPLATE_1, MESSAGE_TEMPLATE_2, MESSAGE_TEMPLATE_3,
-    PHONE_COLUMNS, DELAY_MIN, DELAY_MAX, DELAY_BETWEEN_MESSAGES, USER_AGENT, CONDOMINIO,
-    MAX_CONTACTS_PER_SESSION, BASE_NUMBER
+    EXCEL_FILE, MESSAGE_TEMPLATE_1, MESSAGE_TEMPLATE_2, MESSAGE_TEMPLATE_3,
+    PHONE_COLUMNS, DELAY_MIN, DELAY_MAX, DELAY_BETWEEN_MESSAGES, CONDOMINIO,
+    MAX_CONTACTS_PER_SESSION
 )
 from ..utils import clean_phone_number, format_name, is_mobile_phone
-from ...repositories.mongo_repository import mongo_repo
-from ...utils.structured_logger import StructuredLogger
+from ...repositories.firebase_repository import firebase_repo
 from ...utils.metrics import SessionMetrics
 
+class EvolutionSender:
+    def __init__(self):
+        self.api_url = os.getenv("EVOLUTION_API_URL", "http://localhost:8080")
+        self.api_key = os.getenv("EVOLUTION_API_KEY")
+        self.instance_name = os.getenv("EVOLUTION_INSTANCE_NAME")
+        
+        # O cabeçalho obrigatório da Evolution API
+        self.headers = {
+            "apikey": self.api_key,
+            "Content-Type": "application/json"
+        }
 
-# Global variables for cleanup
-_context = None
-_browser = None
-
-
-def _save_session_and_cleanup():
-    """
-    Close the persistent context (with launch_persistent_context, session is saved automatically).
-    
-    The persistent context saves automatically:
-    - Cookies
-    - LocalStorage
-    - SessionStorage
-    - IndexedDB
-    - Service Workers
-    
-    Everything is persisted in the .whatsapp_profile directory
-    """
-    global _context, _browser
-    
-    if _context:
+    def check_instance(self) -> bool:
+        """
+        Verifica se a instância está conectada e pronta para envio.
+        """
+        endpoint = f"{self.api_url}/instance/connectionState/{self.instance_name}"
         try:
-            _context.close()
-            logger.debug("✅ Persistent context closed (session saved automatically)")
+            response = requests.get(endpoint, headers=self.headers)
+            if response.status_code == 200:
+                state = response.json().get("instance", {}).get("state")
+                return state == "open"
+            return False
         except Exception as e:
-            logger.debug(f"Error closing context: {e}")
-    
-    if _browser:
+            logger.error(f"Erro ao verificar instância: {e}")
+            return False
+
+    def check_number(self, phone: str) -> bool:
+        """
+        Verifica se o número existe no WhatsApp antes de tentar enviar.
+        """
+        endpoint = f"{self.api_url}/chat/whatsappNumbers/{self.instance_name}"
+        payload = {"numbers": [phone]}
         try:
-            _browser.close()
-            logger.debug("Browser closed")
+            response = requests.post(endpoint, json=payload, headers=self.headers)
+            # Aceita 200 ou 201 como sucesso
+            if response.status_code in [200, 201]:
+                data = response.json()
+                return data[0].get("exists", False) if data else False
+            return False
         except Exception as e:
-            logger.debug(f"Error closing browser: {e}")
+            logger.error(f"Erro ao verificar número {phone}: {e}")
+            return False
 
+    def send_message(self, phone: str, message: str) -> tuple[bool, dict]:
+        """
+        Envia uma mensagem de texto usando a Evolution API com simulação de digitação.
+        Retorna (sucesso, dados_da_resposta).
+        """
+        endpoint = f"{self.api_url}/message/sendText/{self.instance_name}"
+        
+        payload = {
+            "number": phone,
+            "text": message,
+            "delay": 2000,         # Simula tempo de digitação (2 segundos)
+            "presence": "composing" # Mostra "Digitando..." durante o delay
+        }
 
-def _handle_interrupt(signum, frame):
-    """Handler for Ctrl+C."""
-    logger.warning("⏸️  Interrupt detected. Saving session...")
-    _save_session_and_cleanup()
-    exit(0)
-
-
-# Register handler for Ctrl+C
-signal.signal(signal.SIGINT, _handle_interrupt)
-atexit.register(_save_session_and_cleanup)
-
+        try:
+            logger.info(f"Enviando mensagem para {phone} via API...")
+            response = requests.post(endpoint, json=payload, headers=self.headers)
+            
+            # Aceita 200 ou 201 como sucesso no envio/fila
+            if response.status_code in [200, 201]:
+                return True, response.json()
+            else:
+                logger.error(f"Erro na API para {phone}: {response.text}")
+                return False, {}
+                
+        except Exception as e:
+            logger.error(f"Falha de conexão com a Evolution API: {str(e)}")
+            return False, {}
 
 def send_messages():
     """
-    Send mass messages via WhatsApp Web.
-    
-    Reads contacts from Excel file (contatos.xlsx) and sends 2 messages to each.
-    Uses launch_persistent_context to maintain authentication between executions.
-    
-    Expected Excel structure:
-        - Column 'Nome': Contact name (will be formatted)
-        - Columns 'Tel1', 'Tel2', etc: Phone numbers
+    Main loop to send messages using Evolution API.
     """
-    # CONNECT TO MONGODB (simple PyMongo - no Prisma)
-    logger.info("🔌 Connecting to MongoDB...")
-    db_connected = mongo_repo.connect()
+    logger.info("🔌 Connecting to Firebase...")
+    db_connected = firebase_repo.connect()
     
     if db_connected:
-        logger.success("✅ MongoDB connected!")
+        logger.success("✅ Firebase connected!")
     else:
         logger.warning("⚠️ Continuing without database...")
+
+    sender = EvolutionSender()
     
-    # Initialize metrics tracking
-    metrics = SessionMetrics()
+    # 🛡️ VERIFICAÇÃO DE SAÚDE DA INSTÂNCIA
+    logger.info("🔍 Verificando status da instância...")
+    if not sender.check_instance():
+        logger.error("❌ Instância não está conectada! Abra o Manager e verifique o QR Code.")
+        return
+
+    session_metrics = SessionMetrics()
+
+    # Load "blacklist" of previously successful phones
+    successful_phones_set = firebase_repo.get_all_successful_phones() if db_connected else set()
+    logger.info(f"🛡️ Loaded {len(successful_phones_set)} previously successful phones from database (Duplicates Check).")
+
     
     # Load data
     try:
         df = pd.read_excel(EXCEL_FILE)
-        logger.info(f"📊 File '{EXCEL_FILE}' loaded successfully. {len(df)} contacts found.")
-            
+        logger.info(f"📊 File '{EXCEL_FILE}' loaded. {len(df)} contacts found.")
     except FileNotFoundError:
         logger.error(f"Error: File '{EXCEL_FILE}' not found.")
         return
-    
-    # ==================== RESUME LOGIC ====================
-    # Check the last processed contact in MongoDB and skip already processed rows
+
+    # Resume logic from Firebase
     start_index = 0
     if db_connected:
-        last_name = mongo_repo.get_last_processed_contact_name()
+        last_name = firebase_repo.get_last_processed_contact_name()
         if last_name:
-            logger.info(f"🔍 Last processed contact in database: '{last_name}'")
-            
-            # Search for the name in the DataFrame (case-insensitive comparison)
             matching_indices = df.index[
                 df['Nome'].astype(str).str.strip().str.lower() == str(last_name).strip().lower()
             ].tolist()
-            
             if matching_indices:
-                # Use the LAST occurrence in case of duplicate names
-                last_match_idx = matching_indices[-1]
-                start_index = last_match_idx + 1
-                
-                if start_index >= len(df):
-                    logger.success(f"✅ All contacts in the spreadsheet have already been processed!")
-                    logger.info(f"   Total contacts: {len(df)} | Last processed: '{last_name}' (row {last_match_idx + 2})")
-                    return
-                
-                skipped = start_index
-                remaining = len(df) - start_index
-                next_name = df.iloc[start_index]['Nome'] if not pd.isna(df.iloc[start_index]['Nome']) else "N/A"
-                logger.success(f"⏩ Último registro encontrado: '{last_name}' (linha {last_match_idx + 2} do Excel)")
-                logger.success(f"⏩ Começando a partir de: '{next_name}' (linha {start_index + 2} do Excel)")
-                logger.info(f"   ⏭️  Pulando {skipped} contatos já processados")
-                logger.info(f"   📋 Contatos restantes: {remaining}")
-            else:
-                logger.warning(f"⚠️ Last contact '{last_name}' NOT FOUND in spreadsheet. Starting from the beginning.")
-                start_index = 0
-        else:
-            logger.info("📋 No previous history found. Starting from the beginning.")
-    
-    # Slice the DataFrame to only process remaining rows
-    df = df.iloc[start_index:].reset_index(drop=True)
-    logger.info(f"📊 Processing {len(df)} contacts this session.")
-    
-    # Initialize session in MongoDB for ETA calculations (with adjusted count)
+                start_index = matching_indices[-1] + 1
+                logger.info(f"⏩ Resuming from index {start_index} after '{last_name}'")
+
+    df_remaining = df.iloc[start_index:]
+    df_remaining = df_remaining.head(MAX_CONTACTS_PER_SESSION)
+    logger.info(f"🚀 Processing {len(df_remaining)} contacts (Limit: {MAX_CONTACTS_PER_SESSION})...")
+
+    # Geração de Batch ID para agrupamento profissional
+    now_str = datetime.now().strftime("%Y%m%d_%H%M")
+    batch_id = f"BATCH_{CONDOMINIO}_{now_str}"
+    logger.info(f"📁 Batch ID da sessão: {batch_id}")
+
+    # Inicializa sessão no Firebase para o Dashboard (Componente Sessão Ativa)
     if db_connected:
-        mongo_repo.init_session(
-            total_rows=len(df),
+        firebase_repo.init_session(
+            total_rows=len(df), # Consideramos o total original para a barra de progresso real
             delay_min=DELAY_MIN,
             delay_max=DELAY_MAX,
             delay_between=DELAY_BETWEEN_MESSAGES
         )
+
+    for index, row in df_remaining.iterrows():
+        raw_name = row['Nome'] if not pd.isna(row['Nome']) else "Cliente"
+        name = format_name(raw_name)
+        excel_row = int(index) + 2 # +1 for 0-index, +1 for header row
         
-    # Load history for deduplication
-    logger.info("📚 Loading history from database...")
-    if db_connected:
-        already_sent_phones = mongo_repo.get_all_successful_phones()
-        logger.info(f"📚 {len(already_sent_phones)} unique numbers loaded from history.")
-    else:
-        already_sent_phones = set()
-        logger.warning("⚠️ No database connection - Duplicate check disabled.")
-    with sync_playwright() as p:
+        # Contagem de métricas para o Dashboard
+        row_phones_total = 0
+        row_phones_found = 0
+        all_potential_phones = []
 
-
-        global _browser, _context
+        for col in PHONE_COLUMNS:
+            if col in df.columns and not pd.isna(row[col]):
+                val = str(row[col]).strip()
+                if val:
+                    row_phones_total += 1
+                    phone = clean_phone_number(val)
+                    if phone:
+                        all_potential_phones.append(phone)
+                        if is_mobile_phone(phone):
+                            row_phones_found += 1
         
-        # Ensure data directory exists
-        user_data_dir = os.path.join(os.path.dirname(STATE_FILE), '.whatsapp_profile')
-        os.makedirs(user_data_dir, exist_ok=True)
+        phones_to_send_raw = [p for p in all_potential_phones if is_mobile_phone(p)]
         
-        # Use launch_persistent_context for more reliable session
-        logger.info("🔄 Starting browser with persistent context...")
-        _context = p.chromium.launch_persistent_context(
-            user_data_dir=user_data_dir,
-            headless=False,
-            locale="pt-BR",
-            timezone_id="America/Sao_Paulo"
-        )
-        
-        _browser = None  # launch_persistent_context returns context, not browser
-        
-        logger.success("✅ Persistent context created!")
-        page = _context.new_page()
-        
-        # User Agent
-        page.set_extra_http_headers({"User-Agent": USER_AGENT})
-
-        logger.info("🌐 Accessing WhatsApp Web...")
-        page.goto("https://web.whatsapp.com/")
-        
-        # Wait for chat list to load OR wait for user to scan QR
-        try:
-            logger.info("⏳ Waiting for authentication (max 2 minutes to scan QR Code)...")
-            StructuredLogger.log_authentication("started")
-            page.wait_for_selector("#pane-side", timeout=120000)
-            logger.success("✅ WhatsApp loaded and authenticated!")
-            StructuredLogger.log_authentication("success")
-            time.sleep(5)  # Wait a bit to ensure everything loaded
-            
-            # ✅ With launch_persistent_context, session is saved automatically!
-            logger.success("✅ Session will be persisted automatically by browser.")
-                
-        except Exception as e:
-            logger.error(f"❌ Error connecting to WhatsApp: {e}")
-            StructuredLogger.log_authentication("failed", error=str(e))
-            _save_session_and_cleanup()
-            return
-        
-        logger.info("Loading WhatsApp...")
-        try:
-            page.goto("https://web.whatsapp.com/")
-            page.wait_for_selector("#pane-side", timeout=40000)
-            logger.success("✅ WhatsApp loaded. Starting message dispatch...")
-        except Exception as e:
-            logger.error(f"Error loading WhatsApp: {e}")
-            _save_session_and_cleanup()
-            return
-
-        total_sent = 0
-        contacts_successfully_processed = 0
-        logger.info(f"ℹ️  Contact limit per session: {MAX_CONTACTS_PER_SESSION} (Successful Contacts)")
-
-        for count, (index, row) in enumerate(df.iterrows(), 1):
-            if contacts_successfully_processed >= MAX_CONTACTS_PER_SESSION:
-                logger.warning(f"🛑 Limit of {MAX_CONTACTS_PER_SESSION} SUCCESSFUL contacts reached for this session.")
-                logger.info("   Finishing execution safely...")
-                break
-
-            raw_name = row['Nome'] if not pd.isna(row['Nome']) else "Cliente"
-            # Format name: lowercase with first letter capitalized, first name only
-            formatted_name = format_name(raw_name)
-            
-            logger.debug(f"DEBUG: Processing row {count}: {raw_name} -> {formatted_name}")
-            metrics.record_contact_processed()
-            
-            # Track all phones and their statuses for this contact
-            phones_sent = []
-            contact_status = "PENDING"
-            
-            # Iterate over ALL phone columns for this contact
-            for phone_col in PHONE_COLUMNS:
-                if phone_col not in df.columns: 
-                    logger.debug(f"DEBUG: Column {phone_col} doesn't exist in Excel")
-                    continue
-                
-                raw_phone = row[phone_col]
-                
-                # IMPORTANT: Skip empty cells silently without counting as invalid
-                if pd.isna(raw_phone) or str(raw_phone).strip() == "" or raw_phone == 0:
-                    continue
-                
-                logger.debug(f"DEBUG: Raw phone from {phone_col}: {raw_phone}")
-                
-                phone = clean_phone_number(raw_phone)
-                logger.debug(f"DEBUG: Clean phone: {phone}")
-                
-                if not phone:
-                    # Only record as invalid if there was actually something in the cell
-                    metrics.record_invalid_phone()
-                    continue
-
-                # Validate: only mobile phones (skip landlines)
-                if not is_mobile_phone(phone):
-                    logger.warning(f"   ⏭️ Skipping landline: {phone} (not mobile)")
-                    continue  # Skip landlines
-
-                # DUPLICATE CHECK: Skip if already sent
-                if phone in already_sent_phones:
-                    logger.warning(f"   ⏩ Skipping duplicate: {phone} (already sent)")
-                    continue
-
-                logger.success(f"✅ Valid mobile: {phone}")
-                metrics.record_phone_processed()
-                messages_sent_for_phone = 0  # Reset counter for each phone
-
-                # --- SEND 3 MESSAGES PER PHONE ---
-                for msg_num in [1, 2, 3]:
-                    if msg_num == 1:
-                        message = MESSAGE_TEMPLATE_1.format(name=formatted_name)
-                        logger.info(f"[{count}] 📱 Processing {formatted_name} - {phone}... (Message {msg_num}/3)")
-                    elif msg_num == 2:
-                        message = MESSAGE_TEMPLATE_2.format(name=formatted_name, condominio=CONDOMINIO)
-                        logger.info(f"   → Sending second message...")
-                    else:
-                        message = MESSAGE_TEMPLATE_3.format(name=formatted_name) if "{name}" in MESSAGE_TEMPLATE_3 else MESSAGE_TEMPLATE_3
-                        logger.info(f"   → Sending third message...")
-                    
-                    encoded_message = urllib.parse.quote(message)
-                    
-                    # URL Injection
-                    link = f"https://web.whatsapp.com/send?phone={phone}&text={encoded_message}"
-                    
-                    # --- Decision Logic (Race Condition) ---
-                    # SPECIFIC selectors for MESSAGE field (not search)
-                    input_selector = 'div[data-lexical-editor="true"][aria-label*="Digitar"]'
-                    input_selector_alt = 'div[data-lexical-editor="true"]'
-                    input_selector_fallback = 'div[aria-placeholder="Digite uma mensagem"]'
-                    
-                    try:
-                        page.goto(link)
-                        
-                        # Wait for page to load chat or error
-                        page.wait_for_load_state("networkidle")
-                        
-                        # VALIDATION 1: Check for specific error messages from WhatsApp
-                        error_detected = False
-                        error_reason = ""
-                        
-                        # Wait a moment for potential popups
-                        time.sleep(1.5)
-
-                        # SPECIAL HANDLING: "Number not on WhatsApp" Popup (with OK button)
-                        # Detects the popup shown in user's screenshot
-                        try:
-                            # 1. Check specifically for the DIALOG element which is the most reliable indicator
-                            dialog = page.query_selector('div[role="dialog"]')
-                            
-                            if dialog and dialog.is_visible():
-                                dialog_text = dialog.text_content()
-                                logger.debug(f"   🔎 Dialog detected with text: {dialog_text[:50]}...")
-                                
-                                # Check for keywords in the dialog text
-                                if "não está no WhatsApp" in dialog_text or \
-                                   "não tem o WhatsApp" in dialog_text or \
-                                   "inválido" in dialog_text or \
-                                   "invalid" in dialog_text:
-                                    
-                                    error_detected = True
-                                    error_reason = "Número não está no WhatsApp (Popup)"
-                                    logger.warning(f"   ⚠️ Popup detected: {error_reason}")
-                                    
-                                    # Try to click OK to close it
-                                    ok_btn = dialog.query_selector('button:has-text("OK")')
-                                    if not ok_btn:
-                                        ok_btn = dialog.query_selector('[data-testid="popup-controls-ok"]')
-                                    if not ok_btn:
-                                        ok_btn = page.query_selector('div[role="button"]:has-text("OK")')
-                                        
-                                    if ok_btn:
-                                        logger.info(f"      🔘 Clicking OK to dismiss...")
-                                        ok_btn.click()
-                                        time.sleep(1)
-                                    else:
-                                        # Fallback click on the dialog itself + Escape?
-                                        logger.info(f"      🔘 Could not find OK button, trying Escape...")
-                                        page.keyboard.press("Escape")
-                                
-                            # 2. As fallback, check page text if dialog check failed/missed
-                            elif page.is_visible("text=não está no WhatsApp") or \
-                                 page.is_visible("text=não tem o WhatsApp"):
-                                error_detected = True
-                                error_reason = "Número não está no WhatsApp (Text Check)"
-                                logger.warning(f"   ⚠️ Text warning detected: {error_reason}")
-                                page.keyboard.press("Escape")
-                                
-                        except Exception as e_popup:
-                             logger.debug(f"   Error checking popup: {e_popup}")
-
-                        # Fallback to legacy/strict pattern check if not yet detected
-                        if not error_detected:
-                            error_patterns = [
-                                ('text=não está no WhatsApp', 'Número não está no WhatsApp'),
-                                ('text=não tem o WhatsApp', 'Número não tem WhatsApp'),
-                                ('text=O número de telefone compartilhado por url é inválido', 'Número inválido'),
-                                ('text=número invalido', 'Número inválido'),
-                                ('[role="alert"]', 'Alerta geral'),
-                            ]
-                            
-                            try:
-                                for selector, reason in error_patterns:
-                                    error_elem = page.query_selector(selector)
-                                    if error_elem and error_elem.is_visible():
-                                        error_text = error_elem.text_content() if hasattr(error_elem, 'text_content') else str(error_elem)
-                                        logger.warning(f"   ⚠️ WhatsApp error detected for {phone}")
-                                        logger.info(f"      Reason: {reason}")
-                                        error_detected = True
-                                        error_reason = reason
-                                        break
-                            except Exception as e:
-                                logger.debug(f"   🔍 Error checking patterns: {e}")
-
-                        
-                        # If error detected, skip this number and save with status
-                        if error_detected:
-                            logger.info(f"      → Pulando para próximo número ({error_reason})")
-                            metrics.record_not_found()
-                            StructuredLogger.log_message_attempt(
-                                contact_name=raw_name,
-                                phone=phone,
-                                message_number=msg_num,
-                                total_messages=3,
-                                status="invalid",
-                                error=error_reason
-                            )
-                            # Invalid phone - will be counted in contact save
-                            break  # Exit message loop (skip to next phone)
-                        
-                        # VALIDATION 2: Try to find message field
-                        input_box = None
-                        
-                        try:
-                            input_box = page.wait_for_selector(input_selector, timeout=10000)
-                        except:
-                            pass
-                        
-                        if not input_box:
-                            try:
-                                input_box = page.wait_for_selector(input_selector_alt, timeout=10000)
-                            except:
-                                pass
-                        
-                        if not input_box:
-                            try:
-                                input_box = page.wait_for_selector(input_selector_fallback, timeout=25000)
-                            except:
-                                pass
-                        
-                        # If message field not found, possible reasons:
-                        # 1. Number doesn't have WhatsApp
-                        # 2. Number is blocked
-                        # 3. Page timeout
-                        if not input_box:
-                            logger.warning(f"   ⚠️ Não foi possível enviar para {phone}")
-                            logger.info(f"      Possíveis motivos:")
-                            logger.info(f"      • Número não tem WhatsApp ativo")
-                            logger.info(f"      • Número está bloqueado")
-                            logger.info(f"      • Timeout na página")
-                            
-                            metrics.record_not_found()
-                            StructuredLogger.log_message_attempt(
-                                contact_name=raw_name,
-                                phone=phone,
-                                message_number=msg_num,
-                                total_messages=3,
-                                status="not_found",
-                                error="Message field not found"
-                            )
-                            
-                            # Not found - will be counted in contact save
-                            continue  # Skip to next phone
-                        
-                        if input_box:
-                            # Verify correct element (conversation, not search)
-                            aria_label = input_box.get_attribute("aria-label") or ""
-                            logger.debug(f"   🔎 Element found - aria-label: '{aria_label}'")
-                            
-                            # VALIDATION: Ensure it's NOT the search field
-                            is_message_field = "digitar" in aria_label.lower()
-                            is_search_field = "pesquisar" in aria_label.lower() or "search" in aria_label.lower()
-                            
-                            if is_search_field:
-                                logger.warning(f"   ⚠️ Found SEARCH FIELD, not message field! Skipping...")
-                                raise Exception("Search field detected, trying another selector")
-                            
-                            logger.debug(f"   ✅ Validated: It's a message field")
-                            
-                            # If found the field, ensure text is there
-                            logger.debug("   ⏳ Waiting for text processing...")
-                            time.sleep(8)
-                            
-                            # Check if field has text (from URL)
-                            text_content = input_box.text_content()
-                            logger.debug(f"   📝 Field content (URL): '{text_content}'")
-                            
-                            # If field is empty, type manually
-                            if not text_content or text_content.strip() == "":
-                                logger.info(f"   ⌨️ Empty field - typing message manually...")
-                                
-                                try:
-                                    # Ensure field is focused and click multiple times
-                                    input_box.click()
-                                    time.sleep(0.3)
-                                    input_box.click()
-                                    time.sleep(0.3)
-                                    input_box.focus()
-                                    time.sleep(0.5)
-                                    
-                                    # Clear field before typing (in case there's something)
-                                    input_box.fill("")
-                                    time.sleep(0.3)
-                                    
-                                    # Type message using fill() which is more reliable than keyboard.type()
-                                    input_box.fill(message)
-                                    time.sleep(5)
-                                    
-                                    logger.debug(f"   ✍️ Message typed via fill()")
-                                except Exception as type_error:
-                                    logger.error(f"   ❌ Error typing message: {type_error}")
-                                    logger.info(f"      Skipping message...")
-                                    continue
-                            else:
-                                logger.debug(f"   ✅ Text already in field (via URL)")
-                            
-                            # Now send by pressing Enter
-                            try:
-                                logger.debug("   🔍 Sending message...")
-                                input_box.focus()
-                                time.sleep(1)
-                                page.keyboard.press("Enter")
-                                logger.debug(f"   ⏸️ Waiting for send confirmation...")
-                                time.sleep(5)
-                                
-                                # Check if field is empty (indicates message was sent)
-                                text_after = input_box.text_content()
-                                if text_after is None:
-                                    text_after = ""
-                                    
-                                if text_after == "" or text_after.strip() == "":
-                                    logger.success(f"   ✅ Message {msg_num} sent to {phone}")
-                                    total_sent += 1
-                                    messages_sent_for_phone += 1
-                                    metrics.record_success()
-                                    StructuredLogger.log_message_attempt(
-                                        contact_name=raw_name,
-                                        phone=phone,
-                                        message_number=msg_num,
-                                        total_messages=3,
-                                        status="success"
-                                    )
-                                else:
-                                    logger.warning(f"   ⚠️ Field still has text: '{text_after}' - Trying again...")
-                                    # Select all and delete
-                                    try:
-                                        page.keyboard.press("Control+A")
-                                        time.sleep(0.2)
-                                        page.keyboard.press("Delete")
-                                        time.sleep(1)
-                                    except Exception as clear_error:
-                                        logger.debug(f"      Error clearing field: {clear_error}")
-                            except Exception as send_error:
-                                logger.error(f"   ❌ Error sending message: {send_error}")
-                                logger.info(f"      Will retry with next message...")
-                                metrics.record_failure("send_error")
-                                StructuredLogger.log_message_attempt(
-                                    contact_name=raw_name,
-                                    phone=phone,
-                                    message_number=msg_num,
-                                    total_messages=3,
-                                    status="failed",
-                                    error=str(send_error)
-                                )
-                                continue
-
-                        else:
-                            logger.error(f"   ❌ Message field not found")
-                        
-                        # --- DELAY BETWEEN MESSAGES ---
-                        if msg_num < 3:  # If not last message, wait before next
-                            wait_time = DELAY_BETWEEN_MESSAGES
-                            logger.info(f"   💤 Waiting {wait_time}s before message {msg_num + 1}...")
-                            time.sleep(wait_time)
-                        else:  # If last message, do long delay before next contact
-                            wait_time = random.randint(DELAY_MIN, DELAY_MAX)
-                            logger.info(f"   💤 Waiting {wait_time}s before next phone...")
-                            
-                            # --- RETURN TO BASE NUMBER (COOL DOWN) ---
-                            # Avoids staying on the contact's chat while waiting
-                            try:
-                                logger.info(f"      🏠 Returning to base number ({BASE_NUMBER}) for safety...")
-                                base_link = f"https://web.whatsapp.com/send?phone={BASE_NUMBER}"
-                                page.goto(base_link)
-                                
-                                # Wait a bit to ensure it loaded the base chat
-                                time.sleep(5)
-                                
-                                # Now wait the rest of the random delay
-                                remaining_wait = max(0, wait_time - 5)
-                                if remaining_wait > 0:
-                                    logger.info(f"      ⏳ Holding at base number for {remaining_wait}s...")
-                                    time.sleep(remaining_wait)
-                                    
-                            except Exception as e_base:
-                                logger.error(f"      ❌ Error returning to base number: {e_base}")
-                                # If failed, just wait the normal time
-                                time.sleep(wait_time)
-                        
-                        # Track successful messages for this phone
-                        pass # Moved append outside the message loop
-                
-                    except Exception as e_wait:
-                        logger.error(f"   ❌ Error processing chat: {type(e_wait).__name__}: {e_wait}")
-                        logger.debug(f"      Details: {str(e_wait)}")
-                        metrics.record_failure(type(e_wait).__name__)
-                        StructuredLogger.log_message_attempt(
-                            contact_name=raw_name,
-                            phone=phone,
-                            message_number=msg_num,
-                            total_messages=3,
-                            status="error",
-                            error=str(e_wait)
-                        )
-                        
-                        # Save as ERROR if some messages were sent
-                        pass # Moved append outside the message loop
-            
-                # After trying all 3 messages for this phone, add to list if at least one was sent
-                if messages_sent_for_phone > 0:
-                    phones_sent.append(phone)
-
-            # --- SAVE CONTACT TO MONGODB (OUTSIDE PHONE LOOP) ---
-            # Calculate funnel metrics once per contact line
-            phones_total_raw = 0
-            phones_valid_count = 0
-            valid_mobile_phones = []
-            
-            for col in PHONE_COLUMNS:
-                raw = row.get(col)
-                if raw and not pd.isna(raw) and str(raw).strip() and raw != 0:
-                    phones_total_raw += 1
-                    cleaned = clean_phone_number(raw)
-                    if cleaned:
-                        phones_valid_count += 1
-                        if is_mobile_phone(cleaned):
-                            valid_mobile_phones.append(cleaned)
-            
-            phones_found = len(valid_mobile_phones)
-            phones_with_msg = len(phones_sent)
-            
-            # Determine overall contact status
-            if phones_found == 0:
-                contact_status = "NO_MOBILE"  # No valid mobile phones
-            elif phones_with_msg == 0:
-                contact_status = "ERROR"
-            elif phones_with_msg == phones_found:
-                contact_status = "SUCCESS"
+        # Filtro de Duplicados
+        phones_to_send = []
+        for p in phones_to_send_raw:
+            if p in successful_phones_set:
+                logger.info(f"⏩ Pulando {p} - já contatado com sucesso anteriormente.")
             else:
-                contact_status = "PARTIAL"
-            
+                phones_to_send.append(p)
+
+        # Se havia telefones válidos, mas todos já foram contatados
+        if not phones_to_send and len(phones_to_send_raw) > 0:
+            logger.warning(f"⏩ {raw_name} ignorado completamente: Todos os telefones já haviam sido contatados antes.")
             if db_connected:
-                try:
-                    mongo_repo.save_contact(
-                        name=raw_name,
-                        status=contact_status,
-                        phones_found=phones_found,
-                        phones_sent=phones_with_msg,
-                        phones=phones_sent,
-                        condominio=CONDOMINIO,
-                        phones_total=phones_total_raw,
-                        phones_valid=phones_valid_count
-                    )
-                    logger.info(f"   💾 MongoDB: {raw_name} | {contact_status} | {phones_with_msg}/{phones_found} phones")
-                except Exception as e:
-                    logger.debug(f"   ⚠️ Could not save to MongoDB: {e}")
+                firebase_repo.save_contact(
+                    name=raw_name,
+                    status="ALREADY_CONTACTED",
+                    phones_found=row_phones_found,
+                    phones_sent=0,
+                    phones=phones_to_send_raw,
+                    condominio=CONDOMINIO,
+                    phones_total=row_phones_total,
+                    phones_valid=len(phones_to_send_raw),
+                    batch_id=batch_id,
+                    row_index=excel_row,
+                    error="Already contacted"
+                )
+            continue
+        
+        # Se não há telefones válidos no Excel (formatos soltos ou em branco)
+        if not phones_to_send:
+            logger.warning(f"⏩ Skipping {raw_name}: No valid mobile phone found.")
+            if db_connected:
+                firebase_repo.save_contact(
+                    name=raw_name,
+                    status="NOT_FOUND",
+                    phones_found=row_phones_found,
+                    phones_sent=0,
+                    phones=all_potential_phones,
+                    condominio=CONDOMINIO,
+                    phones_total=row_phones_total,
+                    phones_valid=0,
+                    batch_id=batch_id,
+                    row_index=excel_row,
+                    error="No valid mobile phone"
+                )
+            continue
+
+        phones_sent_success = 0
+        successful_phones = []
+        last_msg_id = None
+        whatsapp_found_count = 0
+        
+        for phone_idx, phone_to_send in enumerate(phones_to_send):
+            logger.info(f"🧐 Verificando se {phone_to_send} tem WhatsApp (Telefone {phone_idx+1}/{len(phones_to_send)})...")
+            is_valid_on_whatsapp = sender.check_number(phone_to_send)
             
-            # Increment successful contacts counter if messages were sent
-            if phones_with_msg > 0:
-                contacts_successfully_processed += 1
-                logger.info(f"   ✅ Successful contacts count: {contacts_successfully_processed}/{MAX_CONTACTS_PER_SESSION}")
+            if not is_valid_on_whatsapp:
+                logger.warning(f"❌ {phone_to_send} não está no WhatsApp.")
+                continue
 
-
-
-        logger.success(f"🎉 Processing complete. Total sent: {total_sent}")
-        
-        # Finalize metrics and log summary
-        metrics.finalize()
-        summary = metrics.get_summary()
-        
-        logger.info("=" * 60)
-        logger.info("📊 SESSION SUMMARY")
-        logger.info("=" * 60)
-        logger.info(f"Duration: {summary['duration_minutes']:.1f} minutes")
-        logger.info(f"Contacts processed: {summary['total_contacts']}")
-        logger.info(f"Phones processed: {summary['total_phones_processed']}")
-        logger.info(f"Messages sent: {summary['messages_sent']}")
-        logger.info(f"Messages failed: {summary['messages_failed']}")
-        logger.info(f"Invalid phones: {summary['invalid_phones']}")
-        logger.info(f"Not found on WhatsApp: {summary['not_found_phones']}")
-        logger.info(f"Success rate: {summary['success_rate_percent']:.1f}%")
-        logger.info(f"Messages per minute: {summary['messages_per_minute']:.1f}")
-        if summary['errors_by_type']:
-            logger.info(f"Errors by type: {summary['errors_by_type']}")
-        logger.info("=" * 60)
-        
-        # Log structured summary for analysis
-        StructuredLogger.log_session_summary(
-            total_contacts=summary['total_contacts'],
-            total_phones_processed=summary['total_phones_processed'],
-            total_messages_sent=summary['messages_sent'],
-            total_failures=summary['messages_failed'],
-            invalid_phones=summary['invalid_phones'],
-            not_found_phones=summary['not_found_phones'],
-            duration_seconds=summary['duration_seconds'],
-            errors_by_type=summary['errors_by_type']
-        )
-        
-        # Save session BEFORE closing
-        logger.info("💾 Saving session...")
-        try:
-            _context.storage_state(path=STATE_FILE)
-            time.sleep(1)  # Wait for disk write
+            whatsapp_found_count += 1
             
-            # Verify if saved
-            if os.path.exists(STATE_FILE) and os.path.getsize(STATE_FILE) > 100:
-                logger.success(f"✅ Session saved successfully!")
+            # Montar mensagens
+            msg1 = MESSAGE_TEMPLATE_1.format(name=name)
+            msg2 = MESSAGE_TEMPLATE_2.format(name=name, condominio=CONDOMINIO)
+            msg3 = MESSAGE_TEMPLATE_3.format(name=name)
+            
+            logger.info(f"📱 Processing {name} ({phone_to_send})")
+            
+            success = True
+            for msg in [msg1, msg2, msg3]:
+                res, response_data = sender.send_message(phone_to_send, msg)
+                if res:
+                    last_msg_id = response_data.get("key", {}).get("id") or last_msg_id
+                else:
+                    success = False
+                    break
+                time.sleep(1)
+
+            if success:
+                phones_sent_success += 1
+                successful_phones.append(phone_to_send)
+                logger.success(f"✅ Success for {name} ({phone_to_send})!")
             else:
-                logger.warning("⚠️ File may not have been saved correctly")
-        except Exception as e:
-            logger.error(f"❌ Error saving session: {e}")
-        finally:
-            # Close context and browser
-            _save_session_and_cleanup()
-            
-            # MongoDB connection closes automatically
+                logger.error(f"❌ Error for {name} ({phone_to_send})")
+                
+            # O SEGREDO CONTRA BANIMENTOS: As pausas
+            wait_time = random.randint(DELAY_MIN, DELAY_MAX) if success else DELAY_BETWEEN_MESSAGES
+            if phone_idx < len(phones_to_send) - 1 or phones_sent_success > 0:
+                logger.info(f"💤 Aguardando {wait_time} segundos para o próximo disparo...")
+                time.sleep(wait_time)
 
+        # Após tentar todos os telefones do contato, decidir status final
+        if phones_sent_success == 0:
+            status = "ERROR" if whatsapp_found_count > 0 else "NOT_FOUND"
+            session_metrics.record_failure("api_error")
+        elif phones_sent_success < len(phones_to_send):
+            status = "PARTIAL"
+            session_metrics.record_success() 
+        else:
+            status = "SUCCESS"
+            session_metrics.record_success()
+
+        # Salva no Firebase para a Vercel ler
+        if db_connected:
+            firebase_repo.save_contact(
+                name=raw_name,
+                status=status,
+                phones_found=row_phones_found,
+                phones_sent=phones_sent_success,
+                phones=successful_phones if phones_sent_success > 0 else phones_to_send,
+                condominio=CONDOMINIO,
+                phones_total=row_phones_total,
+                phones_valid=len(phones_to_send),
+                batch_id=batch_id,
+                message_id=last_msg_id,
+                row_index=excel_row,
+                content=msg1[:100] + "..." if phones_sent_success > 0 else None
+            )
+
+    logger.success("🎉 All contacts processed!")
 
 if __name__ == "__main__":
     send_messages()

@@ -2,9 +2,10 @@ loguru
 pandas
 openpyxl
 prisma
-playwright
 pymongo
 python-dotenv
+requests
+firebase-admin
 
 
 
